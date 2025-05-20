@@ -1,4 +1,4 @@
-Copyright 2022 Mixpanel, Inc.
+Copyright 2022 OursPrivacy, Inc.
 
 
                                  Apache License

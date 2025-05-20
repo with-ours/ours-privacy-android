@@ -3,6 +3,6 @@ plugins {
 }
 
 include ":"
-rootProject.name = "mixpanel-android"
-include ':mixpanel-android'
-include ':mixpaneldemo'
+rootProject.name = "oursprivacy-android"
+include ':oursprivacy-android'
+include ':oursprivacydemo'

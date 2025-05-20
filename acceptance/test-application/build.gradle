@@ -17,7 +17,7 @@ repositories {
 
 dependencies {
     // for some reason, the signed pom specifies a package type of aar.asc, adding @aar resolves the correct file
-    compile "com.mixpanel.android:mixpanel-android:YOUR-LIB@aar"
+    compile "com.oursprivacy.android:oursprivacy-android:YOUR-LIB@aar"
 }
 
 android {

@@ -1,4 +1,4 @@
-package com.mixpanel.example.hello;
+package com.oursprivacy.example.hello;
 
 import android.app.Activity;
 import android.content.ContentResolver;
@@ -15,7 +15,7 @@ import android.view.Menu;
 import android.view.View;
 import android.widget.EditText;
 
-import com.mixpanel.android.mpmetrics.MixpanelAPI;
+import com.oursprivacy.android.opmetrics.OursPrivacyAPI;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -26,21 +26,17 @@ import java.util.Calendar;
 import java.util.Date;
 
 /**
- * A little application that allows people to update their Mixpanel information.
+ * A little application that allows people to update their OursPrivacy information.
  *
- * For more information about integrating Mixpanel with your Android application,
- * please check out:
  *
- *     https://mixpanel.com/docs/integration-libraries/android
- *
- * @author mixpanel
+ * @author oursprivacy
  *
  */
 public class MainActivity extends Activity {
 
     /*
-     * You will use a Mixpanel API token to allow your app to send data to Mixpanel. To get your token
-     * - Log in to Mixpanel, and select the project you want to use for this application
+     * You will use a OursPrivacy API token to allow your app to send data to OursPrivacy. To get your token
+     * - Log in to OursPrivacy, and select the project you want to use for this application
      * - Click the gear icon in the lower left corner of the screen to view the settings dialog
      * - In the settings dialog, you will see the label "Token", and a string that looks something like this:
      *
@@ -48,24 +44,24 @@ public class MainActivity extends Activity {
      *
      *   Paste it below (where you see "YOUR API TOKEN")
      */
-    public static final String MIXPANEL_API_TOKEN = "NOT A REAL TOKEN";
+    public static final String OURSPRIVACY_API_TOKEN = "e93676a05e4c1dbed98cd2cd3fc03b206c289921af313192296d9dbbf0bfff00";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         final String trackingDistinctId = getTrackingDistinctId();
 
-        // Initialize the Mixpanel library for tracking.
-        mMixpanel = MixpanelAPI.getInstance(this, MIXPANEL_API_TOKEN);
+        // Initialize the OursPrivacy library for tracking.
+        mOursPrivacy = OursPrivacyAPI.getInstance(this, OURSPRIVACY_API_TOKEN);
 
 
         // We also identify the current user with a distinct ID.
 
-        mMixpanel.identify(trackingDistinctId); //this is the distinct_id value that
+        mOursPrivacy.identify(trackingDistinctId); //this is the distinct_id value that
         // will be sent with events. If you choose not to set this,
         // the SDK will generate one for you
 
-        mMixpanel.getPeople().identify(trackingDistinctId); //this is the distinct_id
+        mOursPrivacy.getPeople().identify(trackingDistinctId); //this is the distinct_id
         // that will be used for people analytics. You must set this explicitly in order
         // to dispatch people data.
 
@@ -105,30 +101,30 @@ public class MainActivity extends Activity {
             final JSONObject properties = new JSONObject();
             properties.put("first viewed on", nowInHours);
             properties.put("user domain", "(unknown)"); // default value
-            mMixpanel.registerSuperPropertiesOnce(properties);
+            mOursPrivacy.registerSuperPropertiesOnce(properties);
         } catch (final JSONException e) {
             throw new RuntimeException("Could not encode hour first viewed as JSON");
         }
 
-        // Now we send an event to Mixpanel. We want to send a new
+        // Now we send an event to OursPrivacy. We want to send a new
         // "App Resumed" event every time we are resumed, and
         // we want to send a current value of "hour of the day" for every event.
         // As usual,all of the user's super properties will be appended onto this event.
         try {
             final JSONObject properties = new JSONObject();
             properties.put("hour of the day", hourOfTheDay);
-            mMixpanel.track("App Resumed", properties);
+            mOursPrivacy.track("App Resumed", properties);
         } catch(final JSONException e) {
             throw new RuntimeException("Could not encode hour of the day in JSON");
         }
-        mMixpanel.getPeople().addOnMixpanelUpdatesReceivedListener(listener);
+        mOursPrivacy.getPeople().addOnOursPrivacyUpdatesReceivedListener(listener);
     }
 
-    // Associated with the "Send to Mixpanel" button in activity_main.xml
-    // In this method, we update a Mixpanel people profile using MixpanelAPI.People.set()
+    // Associated with the "Send to OursPrivacy" button in activity_main.xml
+    // In this method, we update a OursPrivacy people profile using OursPrivacyAPI.People.set()
     // and set some persistent properties that will be sent with
-    // all future track() calls using MixpanelAPI.registerSuperProperties()
-    public void sendToMixpanel(final View view) {
+    // all future track() calls using OursPrivacyAPI.registerSuperProperties()
+    public void sendToOursPrivacy(final View view) {
 
         final EditText firstNameEdit = (EditText) findViewById(R.id.edit_first_name);
         final EditText lastNameEdit = (EditText) findViewById(R.id.edit_last_name);
@@ -138,7 +134,7 @@ public class MainActivity extends Activity {
         final String lastName = lastNameEdit.getText().toString();
         final String email = emailEdit.getText().toString();
 
-        final MixpanelAPI.People people = mMixpanel.getPeople();
+        final OursPrivacyAPI.People people = mOursPrivacy.getPeople();
 
         // Update the basic data in the user's People Analytics record.
         // Unlike events, People Analytics always stores the most recent value
@@ -151,7 +147,7 @@ public class MainActivity extends Activity {
         // has updated their info.
         people.increment("Update Count", 1L);
 
-        // Mixpanel events are separate from Mixpanel people records,
+        // OursPrivacy events are separate from OursPrivacy people records,
         // but it might be valuable to be able to query events by
         // user domain (for example, if they represent customer organizations).
         //
@@ -161,23 +157,23 @@ public class MainActivity extends Activity {
         try {
             final JSONObject domainProperty = new JSONObject();
             domainProperty.put("user domain", domainFromEmailAddress(email));
-            mMixpanel.registerSuperProperties(domainProperty);
+            mOursPrivacy.registerSuperProperties(domainProperty);
         } catch (final JSONException e) {
             throw new RuntimeException("Cannot write user email address domain as a super property");
         }
 
-        // In addition to viewing the updated record in mixpanel's UI, it might
+        // In addition to viewing the updated record in oursprivacy's UI, it might
         // be interesting to see when and how many and what types of users
         // are updating their information, so we'll send an event as well.
         // You can call track with null if you don't have any properties to add
         // to an event (remember all the established superProperties will be added
-        // before the event is dispatched to Mixpanel)
-        mMixpanel.track("update info button clicked", null);
+        // before the event is dispatched to OursPrivacy)
+        mOursPrivacy.track("update info button clicked", null);
     }
 
-    // This is an example of how you can use Mixpanel's revenue tracking features from Android.
+    // This is an example of how you can use OursPrivacy's revenue tracking features from Android.
     public void recordRevenue(final View view) {
-        final MixpanelAPI.People people = mMixpanel.getPeople();
+        final OursPrivacyAPI.People people = mOursPrivacy.getPeople();
         // Call trackCharge() with a floating point amount
         // (for example, the amount of money the user has just spent on a purchase)
         // and an optional set of properties describing the purchase.
@@ -188,11 +184,11 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
 
-        // To preserve battery life, the Mixpanel library will store
+        // To preserve battery life, the OursPrivacy library will store
         // events rather than send them immediately. This means it
         // is important to call flush() to send any unsent events
         // before your application is taken out of memory.
-        mMixpanel.flush();
+        mOursPrivacy.flush();
     }
 
     ////////////////////////////////////////////////////
@@ -200,11 +196,11 @@ public class MainActivity extends Activity {
     private String getTrackingDistinctId() {
         final SharedPreferences prefs = getPreferences(MODE_PRIVATE);
 
-        String ret = prefs.getString(MIXPANEL_DISTINCT_ID_NAME, null);
+        String ret = prefs.getString(OURSPRIVACY_DISTINCT_ID_NAME, null);
         if (ret == null) {
             ret = generateDistinctId();
             final SharedPreferences.Editor prefsEditor = prefs.edit();
-            prefsEditor.putString(MIXPANEL_DISTINCT_ID_NAME, ret);
+            prefsEditor.putString(OURSPRIVACY_DISTINCT_ID_NAME, ret);
             prefsEditor.commit();
         }
 
@@ -215,7 +211,7 @@ public class MainActivity extends Activity {
     // In practice, there are great advantages to using distinct ids that
     // are easily associated with user identity, either from server-side
     // sources, or user logins. A common best practice is to maintain a field
-    // in your users table to store mixpanel distinct_id, so it is easily
+    // in your users table to store oursprivacy distinct_id, so it is easily
     // accesible for use in attributing cross platform or server side events.
     private String generateDistinctId() {
         final SecureRandom random = new SecureRandom();
@@ -248,7 +244,7 @@ public class MainActivity extends Activity {
         return ret;
     }
 
-    private MixpanelAPI mMixpanel;
-    private static final String MIXPANEL_DISTINCT_ID_NAME = "Mixpanel Example $distinctid";
-    private static final String LOGTAG = "Mixpanel Example Application";
+    private OursPrivacyAPI mOursPrivacy;
+    private static final String OURSPRIVACY_DISTINCT_ID_NAME = "OursPrivacy Example $distinctid";
+    private static final String LOGTAG = "OursPrivacy Example Application";
 }

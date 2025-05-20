@@ -1,0 +1,43 @@
+// MainActivity.kt
+@file:OptIn(ExperimentalMaterial3Api::class)
+
+package com.oursprivacy.oursprivacydemo
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.navigation.compose.*
+import com.oursprivacy.oursprivacydemo.ui.theme.OursPrivacyandroidTheme
+
+const val OURSPRIVACY_PROJECT_TOKEN = "e93676a05e4c1dbed98cd2cd3fc03b206c289921af313192296d9dbbf0bfff00"
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            OursPrivacyandroidTheme {
+                MyApp()
+            }
+        }
+    }
+}
+
+@Composable
+fun MyApp() {
+    val navController = rememberNavController()
+    Scaffold(
+        modifier = Modifier.fillMaxSize()
+    ) { innerPadding ->
+        NavGraph(navController = navController, modifier = Modifier.padding(innerPadding))
+    }
+}
+
+
+
+
+

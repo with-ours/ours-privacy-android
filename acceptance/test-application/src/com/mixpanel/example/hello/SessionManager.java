@@ -1,4 +1,4 @@
-package com.mixpanel.example.hello;
+package com.oursprivacy.example.hello;
 
 import android.content.Context;
 import android.os.Handler;
@@ -29,7 +29,7 @@ import java.util.UUID;
  * not another call to startSession() for at least 15 seconds. If a session has been started and
  * another startSession() function is called, it is a no op.
  *
- * This class is not officially supported by Mixpanel, and you may need to modify it for your own application.
+ * This class is not officially supported by OursPrivacy, and you may need to modify it for your own application.
  *
  * Example Usage:
  *
@@ -44,7 +44,7 @@ import java.util.UUID;
  *          this._sessionManager = SessionManager.getInstance(this, new SessionManager.SessionCompleteCallback() {
  *              @Override
  *              public void onSessionComplete(SessionManager.Session session) {
- *                  // You may send the session time to Mixpanel in here.
+ *                  // You may send the session time to OursPrivacy in here.
  *                  Log.d("MY APP", "session " + session.getUuid() + " lasted for " +
  *                                  session.getSessionLength()/1000 + " seconds and is now closed");
  *              }

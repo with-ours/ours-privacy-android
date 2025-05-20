@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script automates all the tasks needed to make a new Mixpanel Android SDK release.
+# This script automates all the tasks needed to make a new OursPrivacy Android SDK release.
 #
 # Usage: ./release.sh [X.X.X] where X.X.X is the release version. This param is optional.
 #
@@ -100,10 +100,10 @@ rm changes.txt
 
 # change date latest release
 newDate=$(date "+%B %d\, %Y") # Need the slash before the comma so next command does not fail
-sed -i.bak "s,^\(##### _\).*\(_ - \[v\).*\(](https://github.com/mixpanel/mixpanel-android/releases/tag/v\).*\()\),\1$newDate\2$releaseVersion\3$releaseVersion\4,w changes.txt" README.md
+sed -i.bak "s,^\(##### _\).*\(_ - \[v\).*\(](https://github.com/oursprivacy/oursprivacy-android/releases/tag/v\).*\()\),\1$newDate\2$releaseVersion\3$releaseVersion\4,w changes.txt" README.md
 if [ ! -s changes.txt ]; then
     printf "\n${RED}Err... README.md was not updated. The following command was used:\n"
-    printf "sed -i.bak 's,^\(##### _\).*\(_ - \[v\).*\(](https://github.com/mixpanel/mixpanel-android/releases/tag/v\).*\()\),\1$newDate\2$releaseVersion\3$releaseVersion\4,' README.md${NC}\n\n"
+    printf "sed -i.bak 's,^\(##### _\).*\(_ - \[v\).*\(](https://github.com/oursprivacy/oursprivacy-android/releases/tag/v\).*\()\),\1$newDate\2$releaseVersion\3$releaseVersion\4,' README.md${NC}\n\n"
     abort
 fi
 
@@ -176,8 +176,8 @@ cleanUp
 
 
 printf "\n${GREEN}All done! ¯\_(ツ)_/¯ \n"
-printf "Make sure you make a new release at https://github.com/mixpanel/mixpanel-android/releases/new\n"
-printf "Also, do not forget to update our CHANGELOG (https://github.com/mixpanel/mixpanel-android/wiki/Changelog)\n"
+printf "Make sure you make a new release at https://github.com/oursprivacy/oursprivacy-android/releases/new\n"
+printf "Also, do not forget to update our CHANGELOG (https://github.com/oursprivacy/oursprivacy-android/wiki/Changelog)\n"
 printf "And finally, release the library from https://oss.sonatype.org/index.html\n\n${NC}"
 
 quit

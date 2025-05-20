@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      This permission is required to allow the application to send events and properties to Mixpanel.
+      This permission is required to allow the application to send events and properties to OursPrivacy.
      -->
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -21,10 +21,10 @@
 
     <application>
 
-        <!-- Set the following option to true if you wish to see the debug output from the Mixpanel Android
+        <!-- Set the following option to true if you wish to see the debug output from the OursPrivacy Android
              library. This may be useful in determining when track calls go out. The default value is false. -->
         <!--
-        <meta-data android:name="com.mixpanel.android.MPConfig.EnableDebugLogging"
+        <meta-data android:name="com.oursprivacy.android.MPConfig.EnableDebugLogging"
             android:value="true" />
         -->
 

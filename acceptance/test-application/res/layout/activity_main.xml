@@ -25,19 +25,19 @@
         android:hint="@string/edit_email_address" />
 
     <Button
-        android:id="@+id/send_to_mixpanel"
+        android:id="@+id/send_to_oursprivacy"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="@string/button_send"
         android:layout_below="@id/edit_email_address"
-        android:onClick="sendToMixpanel" />
+        android:onClick="sendToOursPrivacy" />
 
     <Button
         android:id="@+id/send_revenue"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="@string/button_buy"
-        android:layout_below="@id/send_to_mixpanel"
+        android:layout_below="@id/send_to_oursprivacy"
         android:onClick="recordRevenue" />
 
     <Button

@@ -4,7 +4,7 @@ buildscript {
         google()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.4'
+        classpath 'com.android.tools.build:gradle:8.9.2'
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0'
     }
 }
@@ -18,7 +18,7 @@ group = GROUP
 version = VERSION_NAME
 
 android {
-    namespace "com.mixpanel.android"
+    namespace "com.oursprivacy.android"
     compileSdk 34
     buildToolsVersion = "34.0.0"
     compileOptions {
@@ -35,11 +35,11 @@ android {
         targetSdk 34
         multiDexEnabled true
         android.buildFeatures.buildConfig true
-        testApplicationId "com.mixpanel.android.mpmetrics"
+        testApplicationId "com.oursprivacy.android.opmetrics"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles 'proguard.txt'
 
-        buildConfigField "String", "MIXPANEL_VERSION", "\"${version}\""
+        buildConfigField "String", "OURSPRIVACY_VERSION", "\"${version}\""
 
         lintOptions {
             abortOnError true
@@ -56,7 +56,6 @@ android {
     buildTypes {
         debug{
             minifyEnabled false
-            debuggable true
             testCoverageEnabled true
         }
         release {

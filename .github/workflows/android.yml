@@ -1,4 +1,4 @@
-name: Mixpanel Android Pull Request and master branch CI
+name: OursPrivacy Android Pull Request and master branch CI
 
 on:
   push:
@@ -26,17 +26,17 @@ jobs:
       if: always()
       with:
         name: Unit Test Report
-        path: /Users/runner/work/mixpanel-android/mixpanel-android/build/reports/androidTests/connected
+        path: /Users/runner/work/oursprivacy-android/oursprivacy-android/build/reports/androidTests/connected
     - name: Upload test coverage report
       uses: actions/upload-artifact@v4
       with:
         name: Test Coverage Report
-        path: /Users/runner/work/mixpanel-android/mixpanel-android/build/reports/coverage/debug/
+        path: /Users/runner/work/oursprivacy-android/oursprivacy-android/build/reports/coverage/debug/
     - name: Upload lint report
       uses: actions/upload-artifact@v4
       with:
         name: Lint Report
-        path: /Users/runner/work/mixpanel-android/mixpanel-android/build/reports/lint-results.html
+        path: /Users/runner/work/oursprivacy-android/oursprivacy-android/build/reports/lint-results.html
     - name: Android docs
       run:  ./gradlew --info androidJavadocs
 
