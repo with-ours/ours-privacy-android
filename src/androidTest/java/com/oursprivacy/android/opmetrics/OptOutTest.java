@@ -19,6 +19,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -57,7 +58,6 @@ public class OptOutTest {
         mMockReferrerPreferences = new TestUtils.EmptyPreferences(InstrumentationRegistry.getInstrumentation().getContext());
 
         final RemoteService mockPoster = new HttpService() {
-            @Override
             public byte[] performRequest(String endpointUrl, ProxyServerInteractor interactor, Map<String, Object> params, SSLSocketFactory socketFactory) {
                 if (params != null) {
                     final String jsonData = Base64Coder.decodeString(params.get("data").toString());
@@ -198,7 +198,7 @@ public class OptOutTest {
         assertTrue(mCleanUpCalls.await(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
 
         mOursPrivacyAPI.optInTracking();
-        mOursPrivacyAPI.identify("identity");
+        mOursPrivacyAPI.identify("identity", null);
         for (int i = 0; i < 7; i++) {
             assertNotNull(mStoredPeopleUpdates.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
         }
@@ -305,8 +305,8 @@ public class OptOutTest {
         assertEquals("Time Event", mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
         assertNull(mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
 
-        String[] data = mMockAdapter.generateDataString(OPDbAdapter.Table.EVENTS, TOKEN);
-        JSONArray pendingEventsArray = new JSONArray(data[1]);
+        ArrayList<JSONObject> data = mMockAdapter.generateDataString(OPDbAdapter.Table.EVENTS, TOKEN);
+        JSONArray pendingEventsArray = new JSONArray(data.get(1));
         assertEquals(3, pendingEventsArray.length());
         assertEquals("$opt_in", pendingEventsArray.getJSONObject(0).getString("event"));
         assertEquals("Time Event", pendingEventsArray.getJSONObject(1).getString("event"));

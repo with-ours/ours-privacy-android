@@ -38,15 +38,6 @@ fun LandingPage(navController: NavHostController) {
             ) {
                 Text("Tracking")
             }
-            Button(
-                onClick = { navController.navigate("utilityPage") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(red = 123, green = 128, blue = 255)),
-            ) {
-                Text("Utility")
-            }
         }
     }
 }

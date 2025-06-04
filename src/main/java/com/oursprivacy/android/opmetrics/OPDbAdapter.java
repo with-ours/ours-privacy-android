@@ -2,6 +2,7 @@ package com.oursprivacy.android.opmetrics;
 
 import java.io.File;
 import java.io.FilenameFilter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -460,12 +461,11 @@ import com.oursprivacy.android.util.OPLog;
      * representing the events (or null if none could be successfully retrieved) and the total
      * current number of events in the queue.
      */
-    public String[] generateDataString(Table table, String token) {
+    public ArrayList<JSONObject> generateDataString(Table table, String token) {
         Cursor c = null;
         Cursor queueCountCursor = null;
-        String data = null;
+        ArrayList<JSONObject> data = new ArrayList<>();
         String last_id = null;
-        String queueCount = null;
         final String tableName = table.getName();
         final SQLiteDatabase db = mDb.getReadableDatabase();
 
@@ -479,9 +479,6 @@ import com.oursprivacy.android.util.OPLog;
 
             queueCountCursor = db.rawQuery(queueCountQuery.toString(), null);
             queueCountCursor.moveToFirst();
-            queueCount = String.valueOf(queueCountCursor.getInt(0));
-
-            final JSONArray arr = new JSONArray();
 
             while (c.moveToNext()) {
                 if (c.isLast()) {
@@ -491,14 +488,13 @@ import com.oursprivacy.android.util.OPLog;
                 try {
                     final int dataColumnIndex = c.getColumnIndex(KEY_DATA) >= 0 ? c.getColumnIndex(KEY_DATA) : DATA_COLUMN_INDEX;
                     final JSONObject j = new JSONObject(c.getString(dataColumnIndex));
-                    arr.put(j);
+                    final int idColumnIndex = c.getColumnIndex("_id") >= 0 ? c.getColumnIndex("_id") : ID_COLUMN_INDEX;
+                    final String eventId = c.getString(idColumnIndex);
+                    j.put("_id", eventId);
+                    data.add(j);
                 } catch (final JSONException e) {
                     // Ignore this object
                 }
-            }
-
-            if (arr.length() > 0) {
-                data = arr.toString();
             }
         } catch (final SQLiteException e) {
             OPLog.e(LOGTAG, "Could not pull records for OursPrivacy out of database " + tableName + ". Waiting to send.", e);
@@ -520,8 +516,7 @@ import com.oursprivacy.android.util.OPLog;
         }
 
         if (last_id != null && data != null) {
-            final String[] ret = {last_id, data, queueCount};
-            return ret;
+            return data;
         }
         return null;
     }

@@ -107,14 +107,14 @@ public class OursPrivacyBasicTest {
         adapter.addJSON(before, "ATOKEN", OPDbAdapter.Table.EVENTS);
         adapter.deleteDB();
 
-        String[] emptyEventsData = adapter.generateDataString(OPDbAdapter.Table.EVENTS, "ATOKEN");
-        assertNull(emptyEventsData);
+        ArrayList<JSONObject> emptyEventsData = adapter.generateDataString(OPDbAdapter.Table.EVENTS, "ATOKEN");
+        assertTrue(emptyEventsData.isEmpty());
 
         adapter.addJSON(after, "ATOKEN", OPDbAdapter.Table.EVENTS);
 
         try {
-            String[] someEventsData = adapter.generateDataString(OPDbAdapter.Table.EVENTS, "ATOKEN");
-            JSONArray someEvents = new JSONArray(someEventsData[1]);
+            ArrayList<JSONObject> someEventsData = adapter.generateDataString(OPDbAdapter.Table.EVENTS, "ATOKEN");
+            JSONArray someEvents = new JSONArray(someEventsData);
             assertEquals(someEvents.length(), 1);
             assertEquals(someEvents.getJSONObject(0).get("added"), "after");
         } catch (JSONException e) {
@@ -326,7 +326,7 @@ public class OursPrivacyBasicTest {
         assertNull(peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
 
         String deviceId = oursprivacy.getAnonymousId();
-        oursprivacy.identify("Personal Identity");
+        oursprivacy.identify("Personal Identity", null);
 
         assertEquals("prop value identified", peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS).getJSONObject("$set").getString("the prop identified"));
         assertNull(peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
@@ -371,7 +371,7 @@ public class OursPrivacyBasicTest {
         assertNull(peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
 
         String deviceId = oursprivacy.getAnonymousId();
-        oursprivacy.identify(oursprivacy.getDistinctId());
+        oursprivacy.identify(oursprivacy.getDistinctId(), null);
         assertNull(oursprivacy.getUserId());
 
         assertEquals("prop value identified", peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS).getJSONObject("$set").getString("the prop identified"));
@@ -390,7 +390,7 @@ public class OursPrivacyBasicTest {
 
         assertNull(metrics.getUserId());
 
-        metrics.identify("Events Id");
+        metrics.identify("Events Id", null);
         assertEquals("Events Id", metrics.getDistinctId());
         assertEquals("Events Id", metrics.getUserId());
     }
@@ -405,7 +405,7 @@ public class OursPrivacyBasicTest {
 
         assertNull(metrics.getUserId());
 
-        metrics.identify(metrics.getDistinctId());
+        metrics.identify(metrics.getDistinctId(), null);
         assertEquals(generatedId, metrics.getDistinctId());
         assertNull(metrics.getUserId());
     }
@@ -420,7 +420,7 @@ public class OursPrivacyBasicTest {
         assertEquals("$device:" + generatedId, eventsDistinctId);
         assertNull(metrics.getUserId());
 
-        metrics.identify("Distinct Id");
+        metrics.identify("Distinct Id", null);
         assertEquals("Distinct Id", metrics.getDistinctId());
         assertEquals(generatedId, metrics.getAnonymousId());
 
@@ -455,7 +455,6 @@ public class OursPrivacyBasicTest {
         mockAdapter.cleanupEvents(Long.MAX_VALUE, OPDbAdapter.Table.EVENTS);
 
         final RemoteService mockPoster = new HttpService() {
-            @Override
             public byte[] performRequest(String endpointUrl, ProxyServerInteractor interactor, Map<String, Object> params, SSLSocketFactory socketFactory) {
                 final boolean isIdentified = isIdentifiedRef.get();
                 assertTrue(params.containsKey("data"));
@@ -513,7 +512,7 @@ public class OursPrivacyBasicTest {
             }
         };
 
-        metrics.identify("EVENTS ID");
+        metrics.identify("EVENTS ID", null);
 
         // Test filling up the message queue
         for (int i=0; i < mockConfig.getBulkUploadLimit() - 2; i++) {
@@ -575,7 +574,7 @@ public class OursPrivacyBasicTest {
             assertEquals("next wave", nextWaveEvent.getString("event"));
 
             isIdentifiedRef.set(true);
-            metrics.identify("PEOPLE ID");
+            metrics.identify("PEOPLE ID", null);
             metrics.flush();
 
             String peopleTable = messages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS);
@@ -709,7 +708,7 @@ public class OursPrivacyBasicTest {
 
         TestOursPrivacyAPI opMetrics = new TestOursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, "SAME TOKEN");
         assertEquals(opMetrics.getDistinctId(), savedDistinctID);
-        opMetrics.identify("new_user");
+        opMetrics.identify("new_user", null);
 
         opMetrics.track("eventname", null);
 
@@ -770,7 +769,7 @@ public class OursPrivacyBasicTest {
         }
 
         TestOursPrivacyAPI opMetrics = new TestOursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, "SAME TOKEN");
-        opMetrics.identify("new_user");
+        opMetrics.identify("new_user", null);
 
         int groupID = 42;
         opMetrics.track("eventname", null);
@@ -885,9 +884,9 @@ public class OursPrivacyBasicTest {
             }
         };
         String oldDistinctId = metrics.getDistinctId();
-        metrics.identify(newDistinctId);
-        metrics.identify(newDistinctId);
-        metrics.identify(newDistinctId);
+        metrics.identify(newDistinctId, null);
+        metrics.identify(newDistinctId, null);
+        metrics.identify(newDistinctId, null);
 
         assertEquals(messages.size(), 1);
         AnalyticsMessages.EventDescription identifyEventDescription = messages.get(0);
@@ -921,17 +920,17 @@ public class OursPrivacyBasicTest {
         };
         ArrayList<String> oldDistinctIds = new ArrayList<>();
         oldDistinctIds.add(metrics.getDistinctId());
-        metrics.identify(newDistinctId + "0");
+        metrics.identify(newDistinctId + "0", null);
         metrics.reset();
 
         assertThat(oldDistinctIds, not(hasItem(metrics.getDistinctId())));
         oldDistinctIds.add(metrics.getDistinctId());
-        metrics.identify(newDistinctId + "1");
+        metrics.identify(newDistinctId + "1", null);
         metrics.reset();
 
         assertThat(oldDistinctIds, not(hasItem(metrics.getDistinctId())));
         oldDistinctIds.add(metrics.getDistinctId());
-        metrics.identify(newDistinctId + "2");
+        metrics.identify(newDistinctId + "2", null);
 
         assertEquals(messages.size(), 3);
         for (int i=0; i < 3; i++) {
@@ -959,7 +958,7 @@ public class OursPrivacyBasicTest {
 
         metricsOne.clearSuperProperties();
         metricsOne.registerSuperProperties(props);
-        metricsOne.identify("Expected Events Identity");
+        metricsOne.identify("Expected Events Identity", null);
 
         // We exploit the fact that any metrics object with the same token
         // will get their values from the same persistent store.
@@ -1106,7 +1105,6 @@ public class OursPrivacyBasicTest {
     @Test
     public void testAlias() {
         final RemoteService mockPoster = new HttpService() {
-            @Override
             public byte[] performRequest(String endpointUrl, ProxyServerInteractor interactor, Map<String, Object> params, SSLSocketFactory socketFactory) {
                 try {
                     assertTrue(params.containsKey("data"));
@@ -1140,7 +1138,7 @@ public class OursPrivacyBasicTest {
         };
 
         // Check that we post the alias immediately
-        metrics.identify("old id");
+        metrics.identify("old id", null);
         metrics.alias("new id", "old id");
     }
 
@@ -1259,7 +1257,7 @@ public class OursPrivacyBasicTest {
         metrics.track("Third Event");
         metrics.track("Fourth Event");
 
-        metrics.identify("OursPrivacy");
+        metrics.identify("OursPrivacy", null);
 
         for (int i = 0; i < 4; i++) {
             JSONObject sessionMetadata = eventsMessages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS).getSessionMetadata();

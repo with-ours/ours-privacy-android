@@ -15,6 +15,7 @@ import com.oursprivacy.android.util.LegacyVersionUtils;
 import com.oursprivacy.android.util.OPLog;
 import com.oursprivacy.android.util.RemoteService;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -23,6 +24,7 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.SocketTimeoutException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -60,7 +62,7 @@ import javax.net.ssl.SSLSocketFactory;
      *     associated with these messages.
      *
      * @param config The MPConfig configuration settings for the AnalyticsMessages instance.
-     *               
+     *
      */
     public static AnalyticsMessages getInstance(final Context messageContext, OPConfig config) {
         synchronized (sInstances) {
@@ -247,12 +249,13 @@ import javax.net.ssl.SSLSocketFactory;
     }
 
 
-    public void sendIdentify(String distinctId, String token, String url) {
+    public void sendIdentify(String distinctId, String token, HashMap<String, Object> userProperties, String url) {
         final RemoteService poster = getPoster();
 
         final Map<String, Object> params = new HashMap<String, Object>();
         params.put("userId", distinctId);
         params.put("token", token);
+        params.put("userProperties", userProperties);
         if (OPConfig.DEBUG) {
             params.put("verbose", "1");
         }
@@ -419,6 +422,8 @@ import javax.net.ssl.SSLSocketFactory;
                             OPLog.e(LOGTAG, "Could not halt looper", tooLate);
                         }
                     }
+                } catch (JSONException e) {
+                    OPLog.e(LOGTAG, "Worker threw an unhandled exception", e);
                 }
             }// handleMessage
 
@@ -426,7 +431,7 @@ import javax.net.ssl.SSLSocketFactory;
                 return mTrackEngageRetryAfter;
             }
 
-            private void sendAllData(OPDbAdapter dbAdapter, String token) {
+            private void sendAllData(OPDbAdapter dbAdapter, String token) throws JSONException {
                 final RemoteService poster = getPoster();
                 if (!poster.isOnline(mContext, mConfig.getOfflineMode())) {
                     logAboutMessageToOursPrivacy("Not flushing data to OursPrivacy because the device is not connected to the internet.");
@@ -436,17 +441,13 @@ import javax.net.ssl.SSLSocketFactory;
                 sendData(dbAdapter, token, OPDbAdapter.Table.EVENTS, mConfig.getEventsEndpoint());
             }
 
-            private void sendData(OPDbAdapter dbAdapter, String token, OPDbAdapter.Table table, String url) {
+            private void sendData(OPDbAdapter dbAdapter, String token, OPDbAdapter.Table table, String url) throws JSONException {
                 final RemoteService poster = getPoster();
-                String[] eventsData = dbAdapter.generateDataString(table, token);
-                Integer queueCount = 0;
-                if (eventsData != null) {
-                    queueCount = Integer.valueOf(eventsData[2]);
-                }
+                ArrayList<JSONObject> eventsData = dbAdapter.generateDataString(table, token);
 
-                while (eventsData != null && queueCount > 0) {
-                    final String lastId = eventsData[0];
-                    final String rawMessage = eventsData[1];
+                final String lastId = eventsData.get(eventsData.size() - 1).getString("_id");
+                for (JSONObject item : eventsData) {
+                    final String rawMessage = item.toString();
                     final String encodedData = Base64Coder.encodeString(rawMessage);
                     final Map<String, Object> params = new HashMap<>();
                     params.put("data", encodedData);
@@ -508,11 +509,6 @@ import javax.net.ssl.SSLSocketFactory;
                         mFailedRetries++;
                         logAboutMessageToOursPrivacy("Retrying this batch of events in " + mTrackEngageRetryAfter + " ms");
                         break;
-                    }
-
-                    eventsData = dbAdapter.generateDataString(table, token);
-                    if (eventsData != null) {
-                        queueCount = Integer.valueOf(eventsData[2]);
                     }
                 }
             }

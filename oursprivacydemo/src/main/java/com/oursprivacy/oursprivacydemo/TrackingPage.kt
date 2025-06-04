@@ -31,59 +31,18 @@ fun TrackingPage(navController: NavHostController) {
     val dialogMessage = remember { mutableStateOf("") }
     val context = LocalContext.current
     val oursprivacy = OursPrivacyAPI.getInstance(context, OURSPRIVACY_PROJECT_TOKEN, true)
+    oursprivacy.setServerURL("https://dev-api.oursprivacy.com/api/v1")
 
     val trackingActions = listOf(
-        Triple("Track w/o Properties" ,"Event: \"Track Event!\"", {  println("Tracking without properties")
-            oursprivacy.track("Track w/o Properties")
-            oursprivacy.flush()}),
-        Triple("Track w Properties", "Event: \"Track Event with Properties!\"", {
+        Triple("Track Green", "Event: \"Track Event with Properties!\"", {
             println("Tracking with properties")
             val properties = JSONObject(mapOf("testInt" to 1))
             oursprivacy.track("Green",  properties)
-            //oursprivacy.flush()
-        }),
-        Triple("Time Event 5secs", "Event: \"Timed Event after 5 secs!\"", {
-            println("Timing event for 5 seconds")
-            oursprivacy.timeEvent("Time Event 5secs")
-            // Assume some delay logic here if needed
             oursprivacy.flush()
         }),
-        Triple("Clear Timed Events", "Event: \"Timed Events Cleared!\"", {
-            println("Clearing timed events")
-            oursprivacy.clearTimedEvents()
-            oursprivacy.flush()
-        }),
-        Triple("Get Current SuperProperties", "Event: \"Get Current SuperProperties!\"", {
-            println("Getting current super properties")
-            val superProperties = oursprivacy.superProperties
-            println(superProperties.toString())
-        }),
-        Triple("Clear SuperProperties", "Event: \"SuperProperties Cleared!\"", {
-            println("Clearing super properties")
-            oursprivacy.clearSuperProperties()
-            oursprivacy.flush()
-        }),
-        Triple("Register SuperProperties", "Event: \"Register SuperProperties!\"", {
-            println("Registering super properties")
-            val superProperties = JSONObject(mapOf("property" to "value"))
-            oursprivacy.registerSuperProperties(superProperties)
-            oursprivacy.flush()
-        }),
-        Triple("Register SuperProperties Once", "Event: \"Register SuperProperties Once!\"", {
-            println("Registering super properties once")
-            val superPropertiesOnce = JSONObject(mapOf("property_once" to "value_once"))
-            oursprivacy.registerSuperPropertiesOnce(superPropertiesOnce)
-            oursprivacy.flush()
-        }),
-        Triple("Register SP Once w Default Value", "Event: \"Register SP Once w Default Value!\"", {
-            println("Registering super properties once with default value")
-            val defaultProperties = JSONObject(mapOf("default_property" to "default_value"))
-            oursprivacy.registerSuperPropertiesOnce(defaultProperties)
-            oursprivacy.flush()
-        }),
-        Triple("Unregister SuperProperty", "Event: \"Unregister SuperProperty!\"", {
-            println("Unregistering super property")
-            oursprivacy.unregisterSuperProperty("property_to_unregister")
+        Triple("Identify", "Event: \"Identify\"", {
+            println("Identify")
+            oursprivacy.identify(oursprivacy.distinctId, null)
             oursprivacy.flush()
         })
     )

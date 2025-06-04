@@ -60,7 +60,6 @@ public class HttpTest {
         mForceOverMemThreshold = false;
 
         final RemoteService mockPoster = new HttpService() {
-            @Override
             public byte[] performRequest(String endpointUrl, ProxyServerInteractor interactor, Map<String, Object> params, SSLSocketFactory socketFactory)
                     throws ServiceUnavailableException, IOException {
                 try {
