@@ -1,28 +1,3 @@
-<p align="center">
-  <img src="https://user-images.githubusercontent.com/71290498/231855731-2d3774c3-dc41-4595-abfb-9c49f5f84103.png" alt="OursPrivacy Android Library" height="150"/>
-</p>
-
-# Latest Version
-
-##### _March 31, 2025_ - [v8.0.3](https://github.com/oursprivacy/oursprivacy-android/releases/tag/v8.0.3)
-
-# Table of Contents
-
-<!-- MarkdownTOC -->
-
-- [Quick Start Guide](#quick-start-guide)
-    - [Install OursPrivacy](#1-install-oursprivacy)
-    - [Initialize OursPrivacy](#2-initialize-oursprivacy)
-    - [Send Data](#3-send-data)
-    - [Check for Success](#4-check-for-success)
-- [FAQ](#i-want-to-know-more)
-- [I want to know more!](#i-want-to-know-more)
-- [Want to Contribute?](#want-to-contribute)
-- [Changelog](#changelog)
-- [License](#license)
-
-<!-- /MarkdownTOC -->
-
 <a name="quick-start-guide"></a>
 # Quick Start Guide
 
@@ -134,22 +109,4 @@ If your events are still not showing up after 60 seconds, check if you have opte
     ...
 </application>
 ...
-```
-
-<a name="i-want-to-know-more"></a>
-
-<a name="license"></a>
-# License
-
-```
-See LICENSE File for details. The Base64Coder,
-ConfigurationChecker, and StackBlurManager classes, and the entirety of the
- com.oursprivacy.android.java_websocket package used by this
-software have been licensed from non-OursPrivacy sources and modified
-for use in the library. Please see the relevant source files, and the
-LICENSE file in the com.oursprivacy.android.java_websocket package for details.
-
-The StackBlurManager class uses an algorithm by Mario Klingemann <mario@quansimondo.com>
-You can learn more about the algorithm at
-http://www.quasimondo.com/StackBlurForCanvas/StackBlurDemo.html.
 ```
