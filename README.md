@@ -153,3 +153,15 @@ The StackBlurManager class uses an algorithm by Mario Klingemann <mario@quansimo
 You can learn more about the algorithm at
 http://www.quasimondo.com/StackBlurForCanvas/StackBlurDemo.html.
 ```
+
+## Contributing
+
+If you'd like to contribute to this SDK, please see our [publishing documentation](PUBLISHING.md) for development and publishing guidelines.
+
+## Support
+
+For help with this SDK, please:
+
+- Check the [documentation](https://docs.oursprivacy.com)
+- Open an issue on [GitHub](https://github.com/with-ours/ours-privacy-android/issues)
+- Contact us at support@oursprivacy.com
