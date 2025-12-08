@@ -237,7 +237,7 @@ public class OPConfig {
             setEventsEndpointWithBaseURL(OPConstants.URL.OURSPRIVACY_API);
         }
 
-        String identifyEndpoint = metaData.getString("com.mixpanel.android.MPConfig.IdentifyEndpoint");
+        String identifyEndpoint = metaData.getString("com.oursprivacy.android.MPConfig.IdentifyEndpoint");
         if (identifyEndpoint != null) {
             setIdentifyEndpoint(noUseIpAddressForGeolocationSetting ? identifyEndpoint : getEndPointWithIpTrackingParam(identifyEndpoint, getUseIpAddressForGeolocation()));
         } else {
