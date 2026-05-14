@@ -59,7 +59,7 @@ public final class HttpService implements RemoteService {
     }
 
     @SuppressLint("MissingPermission")
-    @SuppressWarnings("MissingPermission")
+    @SuppressWarnings({"MissingPermission", "deprecation"})
     @Override
     public boolean isOnline(Context context, OfflineMode offlineMode) {
         if (sIsOursPrivacyBlocked) return false;
