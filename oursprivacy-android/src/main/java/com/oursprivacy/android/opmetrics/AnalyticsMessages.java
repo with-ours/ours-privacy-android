@@ -106,6 +106,19 @@ import java.util.concurrent.TimeUnit;
         }
     }
 
+    /**
+     * Test-only: parks the worker thread inside a single message handler so the
+     * caller can deterministically queue follow-on messages before the worker
+     * starts draining them. {@code parked} fires once the worker is blocked;
+     * countDown {@code release} to let it resume.
+     */
+    /* package */ void parkWorker(CountDownLatch parked, CountDownLatch release) {
+        final Message m = Message.obtain();
+        m.what = BARRIER;
+        m.obj = new CountDownLatch[]{parked, release};
+        mWorker.runMessage(m);
+    }
+
     // ---------- worker ----------
 
     private final class Worker {
@@ -137,11 +150,14 @@ import java.util.concurrent.TimeUnit;
         }
 
         private void scheduleFlush(long delayMs) {
+            // FLUSH_PERIODIC is the recurring timer-driven flush. We coalesce
+            // only against ourselves — never against user-initiated FLUSH
+            // messages, which must survive to fire sendBatch().
             synchronized (mHandlerLock) {
                 if (mHandler == null) return;
-                mHandler.removeMessages(FLUSH);
+                mHandler.removeMessages(FLUSH_PERIODIC);
                 final Message m = Message.obtain();
-                m.what = FLUSH;
+                m.what = FLUSH_PERIODIC;
                 mHandler.sendMessageDelayed(m, delayMs);
             }
         }
@@ -161,7 +177,8 @@ import java.util.concurrent.TimeUnit;
                             }
                             break;
                         }
-                        case FLUSH: {
+                        case FLUSH:
+                        case FLUSH_PERIODIC: {
                             sendBatch();
                             scheduleFlush(mFlushInterval);
                             break;
@@ -180,6 +197,14 @@ import java.util.concurrent.TimeUnit;
                         case SENTINEL: {
                             final CountDownLatch latch = (CountDownLatch) msg.obj;
                             if (latch != null) latch.countDown();
+                            break;
+                        }
+                        case BARRIER: {
+                            final CountDownLatch[] gates = (CountDownLatch[]) msg.obj;
+                            gates[0].countDown();
+                            try { gates[1].await(); } catch (InterruptedException ignored) {
+                                Thread.currentThread().interrupt();
+                            }
                             break;
                         }
                         default:
@@ -253,6 +278,8 @@ import java.util.concurrent.TimeUnit;
     private static final int CLEAR_QUEUE = 2;
     private static final int KILL_WORKER = 3;
     private static final int SENTINEL = 4;
+    private static final int FLUSH_PERIODIC = 5;
+    private static final int BARRIER = 6;
 
     private static final String LOGTAG = "OursPrivacy.Analytics";
 }
