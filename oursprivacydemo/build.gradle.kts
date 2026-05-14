@@ -1,23 +1,38 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) load(f.inputStream())
+}
+
 android {
     namespace = "com.oursprivacy.oursprivacydemo"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.oursprivacy.oursprivacydemo"
         minSdk = 21
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+
+        buildConfigField("String", "OURSPRIVACY_TOKEN", "\"${localProps["OURSPRIVACY_TOKEN"] ?: ""}\"")
+        buildConfigField("String", "RECORDER_URL", "\"${localProps["RECORDER_URL"] ?: ""}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
+        compose = true
     }
 
     buildTypes {
@@ -36,9 +51,6 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
-    buildFeatures {
-        compose = true
-    }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
     }
@@ -55,6 +67,9 @@ java {
     }
 }
 
+val usePublished = project.findProperty("usePublished") == "true"
+val sdkVersion = rootProject.properties["VERSION_NAME"] as String? ?: "2.0.0-alpha.0"
+
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
@@ -66,7 +81,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.navigation:navigation-runtime-ktx:2.7.7")
     implementation("androidx.navigation:navigation-compose:2.7.7")
-    implementation(project(":"))
+    if (usePublished) {
+        implementation("com.oursprivacy.android:oursprivacy-android:$sdkVersion")
+    } else {
+        implementation(project(":"))
+    }
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

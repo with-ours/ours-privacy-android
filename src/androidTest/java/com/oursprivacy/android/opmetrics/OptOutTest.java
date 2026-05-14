@@ -134,7 +134,6 @@ public class OptOutTest {
         assertEquals(null, mStoredPeopleUpdates.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
         assertEquals(null, mStoredAnonymousPeopleUpdates.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
         assertNull(mPerformRequestEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        assertEquals(0, mOursPrivacyAPI.getSuperProperties().length());
         assertTrue(mCleanUpCalls.await(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
     }
 
@@ -258,68 +257,6 @@ public class OptOutTest {
         forceFlush();
         assertNotNull(mPerformRequestEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
         assertNull(mPerformRequestEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-    }
-
-    /**
-     * Track calls before and after opting out
-     */
-    @Test
-    public void testTrackCalls() throws InterruptedException, JSONException {
-        mOursPrivacyAPI = new OursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockReferrerPreferences, TOKEN, false, null, true) {
-            @Override
-            PersistentIdentity getPersistentIdentity(Context context, Future<SharedPreferences> referrerPreferences, String token, String instanceName) {
-                mPersistentIdentity = super.getPersistentIdentity(context, referrerPreferences, token, instanceName);
-                return mPersistentIdentity;
-            }
-
-            @Override
-            AnalyticsMessages getAnalyticsMessages() {
-                return mAnalyticsMessages;
-            }
-        };
-
-        mOursPrivacyAPI.timeEvent("Time Event");
-        mOursPrivacyAPI.trackMap("Event with map", new HashMap<String, Object>());
-        mOursPrivacyAPI.track("Event with properties", new JSONObject());
-        assertEquals(1, mPersistentIdentity.getTimeEvents().size());
-
-        mCleanUpCalls = new CountDownLatch(2);
-        mOursPrivacyAPI.optOutTracking();
-        assertTrue(mCleanUpCalls.await(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        mStoredEvents.clear();
-        assertEquals(0, mPersistentIdentity.getTimeEvents().size());
-
-        mOursPrivacyAPI.timeEvent("Time Event");
-        assertEquals(0, mPersistentIdentity.getTimeEvents().size());
-        mOursPrivacyAPI.track("Time Event");
-
-        mOursPrivacyAPI.optInTracking();
-        mOursPrivacyAPI.track("Time Event");
-        mOursPrivacyAPI.timeEvent("Time Event");
-        assertEquals(1, mPersistentIdentity.getTimeEvents().size());
-        mOursPrivacyAPI.track("Time Event");
-
-        mMockAdapter = getMockDBAdapter();
-        assertEquals("$opt_in", mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        assertEquals("Time Event", mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        assertEquals("Time Event", mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        assertNull(mStoredEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-
-        ArrayList<JSONObject> data = mMockAdapter.generateDataString(OPDbAdapter.Table.EVENTS, TOKEN);
-        JSONArray pendingEventsArray = new JSONArray(data.get(1));
-        assertEquals(3, pendingEventsArray.length());
-        assertEquals("$opt_in", pendingEventsArray.getJSONObject(0).getString("event"));
-        assertEquals("Time Event", pendingEventsArray.getJSONObject(1).getString("event"));
-        assertEquals("Time Event", pendingEventsArray.getJSONObject(2).getString("event"));
-        assertFalse(pendingEventsArray.getJSONObject(1).getJSONObject("properties").has("$duration"));
-        assertTrue(pendingEventsArray.getJSONObject(2).getJSONObject("properties").has("$duration"));
-
-        forceFlush();
-        for (int i = 0; i < 3; i++) {
-            assertNotNull(mPerformRequestEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        }
-        assertNull(mPerformRequestEvents.poll(MAX_TIMEOUT_POLL, TimeUnit.MILLISECONDS));
-        assertEquals(0, mPersistentIdentity.getTimeEvents().size());
     }
 
     private void forceFlush() {

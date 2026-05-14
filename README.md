@@ -1,155 +1,398 @@
-<p align="center">
-  <img src="https://user-images.githubusercontent.com/71290498/231855731-2d3774c3-dc41-4595-abfb-9c49f5f84103.png" alt="OursPrivacy Android Library" height="150"/>
-</p>
+# Ours Privacy Android SDK
 
-# Latest Version
+[![Maven Central](https://img.shields.io/maven-central/v/com.oursprivacy.android/oursprivacy-android)](https://central.sonatype.com/artifact/com.oursprivacy.android/oursprivacy-android)
+[![Apache License](https://img.shields.io/github/license/with-ours/ours-privacy-android)](https://oursprivacy.com)
+[![Documentation](https://img.shields.io/badge/Documentation-blue)](https://docs.oursprivacy.com/docs/android-sdk)
 
-##### _March 31, 2025_ - [v8.0.3](https://github.com/oursprivacy/oursprivacy-android/releases/tag/v8.0.3)
+Privacy-first analytics for Android.
 
-# Table of Contents
+- [Maven Central](https://central.sonatype.com/artifact/com.oursprivacy.android/oursprivacy-android)
+- [GitHub](https://github.com/with-ours/ours-privacy-android)
+- [Docs](https://docs.oursprivacy.com/docs/android-sdk)
 
-<!-- MarkdownTOC -->
+---
 
-- [Quick Start Guide](#quick-start-guide)
-    - [Install OursPrivacy](#1-install-oursprivacy)
-    - [Initialize OursPrivacy](#2-initialize-oursprivacy)
-    - [Send Data](#3-send-data)
-    - [Check for Success](#4-check-for-success)
-- [FAQ](#i-want-to-know-more)
-- [I want to know more!](#i-want-to-know-more)
-- [Want to Contribute?](#want-to-contribute)
-- [Changelog](#changelog)
-- [License](#license)
+## Table of Contents
 
-<!-- /MarkdownTOC -->
+- [Quick Start](#quick-start)
+- [Complete Example](#complete-example)
+- [API Reference](#api-reference)
+  - [Initialization](#initialization)
+  - [Core Tracking](#core-tracking)
+  - [Configuration](#configuration)
+  - [Privacy Controls](#privacy-controls)
+- [Payload Structure](#payload-structure)
+- [Migration from 1.x](#migration-from-1x)
+- [FAQ](#faq)
+- [Support](#support)
 
-<a name="quick-start-guide"></a>
-# Quick Start Guide
+---
 
-Check out our official documentation for more in depth information on installing and using OursPrivacy on Android.
+## Quick Start
 
-## 1. Install OursPrivacy
-You will need your project token for initializing your library.
+### 1. Install
 
-**Step 1 - Add the oursprivacy-android library as a gradle dependency:**
-We publish builds of our library to the Maven central repository as an .aar file. This file contains all of the classes, resources, and configurations that you'll need to use the library. To install the library inside Android Studio, you can simply declare it as dependency in your build.gradle file.
-
-Add the following lines to the `dependencies` section in *app/build.gradle*
+Add to your app's `build.gradle` dependencies:
 
 ```gradle
-implementation "com.oursprivacy.android:oursprivacy-android:7.+"
+implementation "com.oursprivacy.android:oursprivacy-android:2.0.0"
 ```
- 
-Once you've updated your build.gradle file, you can force Android Studio to sync with your new configuration by clicking the Sync Project with Gradle Files icon at the top of the window.
 
-![Sync Android With Gradle](https://storage.googleapis.com/cdn-mxpnl-com/static/readme/android-sync-gradle.png)
+Make sure `mavenCentral()` is listed in your repositories block.
 
-This should download the .aar dependency at which point you'll have access to the OursPrivacy library API calls. If it cannot find the dependency, you should make sure you've specified `mavenCentral()` as a repository in your `build.gradle`.
+Add permissions to `AndroidManifest.xml`:
 
-**Step 2 - Add permissions to your AndroidManifest.xml:**
-In order for the library to work you'll need to ensure that you're requesting the following permissions in your AndroidManifest.xml:
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
 
-```java
-<!--
-This permission is required to allow the application to send
-events and properties to OursPrivacy.
--->
-<uses-permission
-  android:name="android.permission.INTERNET" />
-
-<!--
-  This permission is optional but recommended so we can be smart
-  about when to send data.
- -->
-<uses-permission
-  android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-<!--
-  This permission is optional but recommended so events will
-  contain information about bluetooth state
--->
-<uses-permission
-  android:name="android.permission.BLUETOOTH" />
+<!-- Optional: lets the SDK batch intelligently based on connectivity -->
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
-At this point, you're ready to use the OursPrivacy Android library inside Android Studio.
 
-## 2. Initialize OursPrivacy
-Once you've set up your build system or IDE to use the OursPrivacy library, you can initialize it in your code by calling OursPrivacyAPI.getInstance with your application context, your OursPrivacy project token and automatic events setting.
+### 2. Initialize
 
 ```java
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI;
 
-
-public class MainActivity extends ActionBarActivity {
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-
-        trackAutomaticEvents = false;
-        OursPrivacyAPI oursprivacy = OursPrivacyAPI.getInstance(this, "YOUR_TOKEN", trackAutomaticEvents);
-    }
-}
+OursPrivacyAPI op = OursPrivacyAPI.getInstance(context, "YOUR_API_TOKEN", true);
 ```
-[See all configuration options](http://oursprivacy.github.io/oursprivacy-android/index.html)
 
-## 3. Send Data
-Let's get started by sending event data. You can send an event from anywhere in your application. Better understand user behavior by storing details that are specific to the event (properties). 
+The SDK connects to `https://cdn.oursprivacy.com` by default — no endpoint configuration needed.
+
+Hold a single `OursPrivacyAPI` instance for the lifetime of your app — typically in `Application.onCreate()`.
+
+### 3. Track Events
 
 ```java
-JSONObject props = new JSONObject();
-props.put("source", "Pat's affiliate site");
-props.put("Opted out of email", true);
-
-oursprivacy.track("Sign Up", props);
+op.track("Button Pressed");
+op.track("Purchase", new JSONObject().put("value", 49.99).put("currency", "USD"));
 ```
 
-## 4. Check for Success
+### 4. Identify Users
 
-Once data hits our API, it generally takes ~60 seconds for it to be processed, stored, and queryable in your project.
+After login, link events to a user:
 
+```java
+HashMap<String, Object> userProperties = new HashMap<>();
+userProperties.put("email", "user@example.com");
+userProperties.put("external_id", "user-123");
 
-# FAQ
-**I want to stop tracking an event/event property in OursPrivacy. Is that possible?**
+op.identify("user-123", userProperties);
+```
 
-Yes, in Lexicon, you can intercept and drop incoming events or properties. OursPrivacy won’t store any new data for the event or property you select to drop. 
+### 5. Flush
 
-**I have a test user I would like to opt out of tracking. How do I do that?**
+Events are batched and sent every 60 seconds by default. To send immediately:
 
-OursPrivacy’s client-side tracking library contains the optOutTracking() method, which will set the user’s local opt-out state to “true” and will prevent data from being sent from a user’s device. More detailed instructions can be found in the section.
+```java
+op.flush();
+```
+
+---
+
+## Complete Example
+
+```java
+import android.app.Application;
+import com.oursprivacy.android.opmetrics.OursPrivacyAPI;
+
+public class MyApp extends Application {
+    private OursPrivacyAPI op;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        op = OursPrivacyAPI.getInstance(this, "YOUR_API_TOKEN", true);
+    }
+
+    public OursPrivacyAPI getAnalytics() {
+        return op;
+    }
+}
+
+// In an Activity:
+OursPrivacyAPI op = ((MyApp) getApplication()).getAnalytics();
+op.track("Screen Viewed", new JSONObject().put("screen", "Home"));
+```
+
+---
+
+## API Reference
+
+### Initialization
+
+#### `OursPrivacyAPI.getInstance(context, token, trackAutomaticEvents)`
+
+Returns the SDK instance. Creates it on first call; returns the same instance on subsequent calls. Call this in `Application.onCreate()` and hold the reference.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `context` | `Context` | Yes | Application context |
+| `token` | `String` | Yes | Your project token |
+| `trackAutomaticEvents` | `boolean` | Yes | Record session and lifecycle events automatically |
+
+```java
+OursPrivacyAPI op = OursPrivacyAPI.getInstance(context, "YOUR_API_TOKEN", true);
+```
+
+---
+
+### Core Tracking
+
+#### `op.track(eventName)`
+#### `op.track(eventName, properties)`
+
+Track an event with optional properties.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `eventName` | `String` | Yes | Name of the event |
+| `properties` | `JSONObject` | No | Key/value pairs to attach to the event |
+
+**Returns:** `void`
+
+```java
+op.track("Page View");
+op.track("Purchase", new JSONObject().put("value", 49.99).put("currency", "USD"));
+```
+
+You can also pass a `Map<String, Object>` instead of `JSONObject`:
+
+```java
+Map<String, Object> props = new HashMap<>();
+props.put("value", 49.99);
+op.trackMap("Purchase", props);
+```
+
+---
+
+#### `op.identify(distinctId, userProperties)`
+
+Associate all future `track()` calls with the given user identity. Call this after a user logs in.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `distinctId` | `String` | Yes | Your system's user ID |
+| `userProperties` | `HashMap<String, Object>` | No | User attributes to attach |
+
+**Returns:** `void`
+
+```java
+HashMap<String, Object> props = new HashMap<>();
+props.put("email", "jane@example.com");
+props.put("external_id", "db-user-456");
+props.put("first_name", "Jane");
+
+op.identify("db-user-456", props);
+```
+
+---
+
+#### `op.flush()`
+
+Push all queued events to the server immediately. Useful before the app goes to background or a user logs out.
+
+**Returns:** `void`
+
+```java
+op.flush();
+```
+
+---
+
+#### `op.reset()`
+
+Clear the current user identity. Generates a new random visitor ID. Call this when a user logs out.
+
+**Returns:** `void`
+
+```java
+op.reset();
+```
+
+---
+
+### Configuration
+
+#### `op.setServerURL(serverURL)`
+
+Override the ingest URL after initialization. Useful for routing through a proxy or pointing at a local capture server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `serverURL` | `String` | Yes | Base URL for API requests |
+
+**Returns:** `void`
+
+```java
+op.setServerURL("https://your-proxy.example.com");
+```
+
+---
+
+#### `op.setFlushBatchSize(n)`
+
+Set the maximum number of events sent in a single network request. Maximum value is 50; values above 50 are clamped.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `n` | `int` | Yes | Number of events per batch (max 50) |
+
+**Returns:** `void`
+
+```java
+op.setFlushBatchSize(25);
+```
+
+---
+
+#### `op.setEnableLogging(enabled)`
+
+Enable or disable debug logging. Disabled by default.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | `boolean` | Yes | Whether to enable SDK logging |
+
+**Returns:** `void`
+
+```java
+op.setEnableLogging(true);
+```
+
+You can also enable debug logging via `AndroidManifest.xml` without a code change:
+
+```xml
+<application>
+    <meta-data
+        android:name="com.oursprivacy.android.Config.EnableDebugLogging"
+        android:value="true" />
+</application>
+```
+
+---
+
+### Privacy Controls
+
+#### `op.optOutTracking()`
+
+Stop all tracking immediately. Queued events that have not been flushed are discarded. Call `flush()` first if you want to preserve them.
+
+**Returns:** `void`
+
+```java
+op.flush();
+op.optOutTracking();
+```
+
+---
+
+#### `op.optInTracking()`
+
+Resume tracking after a previous call to `optOutTracking()`. This also sends an `$opt_in` event to the server.
+
+**Returns:** `void`
+
+```java
+op.optInTracking();
+```
+
+---
+
+#### `op.hasOptedOutTracking()`
+
+Check whether the current user has opted out of tracking.
+
+**Returns:** `boolean`
+
+```java
+if (op.hasOptedOutTracking()) {
+    // show consent UI
+}
+```
+
+---
+
+## Payload Structure
+
+The SDK sends a JSON body to `POST /ingest` on the configured server URL.
+
+```json
+{
+  "token": "your-project-token",
+  "is_manually_set_id": false,
+  "data": [
+    {
+      "event": "Purchase",
+      "visitor_id": "550e8400-e29b-41d4-a716-446655440000",
+      "distinct_id": "ecff9f0e-d4f8-4d9e-b2f8-8d9b2fcdf7b2",
+      "eventProperties": {
+        "value": 49.99,
+        "currency": "USD"
+      },
+      "userProperties": {
+        "custom_properties": {},
+        "consent": {}
+      },
+      "defaultProperties": {
+        "device_type": "mobile",
+        "os_name": "Android",
+        "os_version": "14",
+        "screen_width": 1080,
+        "screen_height": 2400,
+        "visitor_id": "550e8400-e29b-41d4-a716-446655440000"
+      }
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `token` | Your project token |
+| `is_manually_set_id` | `true` when visitor ID was set explicitly |
+| `data` | Array of event objects in this batch |
+| `event` | Event name. Identify events use `$identify` |
+| `visitor_id` | Stable visitor UUID for this install |
+| `distinct_id` | Per-event UUID for this occurrence |
+| `eventProperties` | Properties from `track()` |
+| `userProperties.custom_properties` | Custom user attributes from `identify()` |
+| `userProperties.consent` | Consent flags from `identify()` |
+| `defaultProperties` | Automatically collected device/SDK metadata |
+
+---
+
+## Migration from 1.x
+
+2.0.0 is a hard break. Key removals:
+
+- **People/Group API removed.** `getPeople()`, group methods, and all `people.*` calls are gone.
+- **Super-properties removed.** `registerSuperProperties`, `unregisterSuperProperty`, `clearSuperProperties`, `getSuperProperties` — use `defaultProperties` on `track()` instead.
+- **Timed events removed.** `timeEvent`, `eventElapsedTime`, `clearTimedEvent`.
+- **Named instances removed.** All `getInstance(context, token, name, ...)` overloads are gone. Use the single `getInstance(context, token, trackAutomaticEvents)`.
+- **Endpoint updated.** Default endpoint is now `https://cdn.oursprivacy.com/ingest`.
+- **Manifest keys renamed.** `com.oursprivacy.android.MPConfig.*` → `com.oursprivacy.android.Config.*`.
+
+---
+
+## FAQ
 
 **Why aren't my events showing up?**
 
-First make sure your test device has internet access. To preserve battery life and customer bandwidth, the OursPrivacy library doesn't send the events you record immediately. Instead, it sends batches to the OursPrivacy servers every 60 seconds while your application is running, as well as when the application transitions to the background. You can call flush() manually if you want to force a flush at a particular moment for example before your application is completely shutdown.
+Events batch and flush every 60 seconds by default. Call `op.flush()` to send immediately. Enable debug logging with `op.setEnableLogging(true)` to see what's happening. Check that `hasOptedOutTracking()` returns `false`.
 
-If your events are still not showing up after 60 seconds, check if you have opted out of tracking. You can also enable OursPrivacy debugging and logging, it allows you to see the debug output from the OursPrivacy Android library. To enable it, you will want to add the following permission within your AndroidManifest.xml inside the `<application>` tag:
+**Can I run more than one instance in the same app?**
 
-```java
-...
-<application>
-    <meta-data
-      android:name="com.oursprivacy.android.MPConfig.EnableDebugLogging"
-      android:value="true" />
-    ...
-</application>
-...
-```
+`getInstance` uses your token as the instance key, so calling it with different tokens returns different instances. Use one token per app in most cases.
 
-<a name="i-want-to-know-more"></a>
+**What Android versions are supported?**
 
-<a name="license"></a>
-# License
+minSdk 21 (Android 5.0 Lollipop) and above.
 
-```
-See LICENSE File for details. The Base64Coder,
-ConfigurationChecker, and StackBlurManager classes, and the entirety of the
- com.oursprivacy.android.java_websocket package used by this
-software have been licensed from non-OursPrivacy sources and modified
-for use in the library. Please see the relevant source files, and the
-LICENSE file in the com.oursprivacy.android.java_websocket package for details.
+---
 
-The StackBlurManager class uses an algorithm by Mario Klingemann <mario@quansimondo.com>
-You can learn more about the algorithm at
-http://www.quasimondo.com/StackBlurForCanvas/StackBlurDemo.html.
-```
+## Support
+
+- [Documentation](https://docs.oursprivacy.com/docs/android-sdk)
+- [GitHub Issues](https://github.com/with-ours/ours-privacy-android/issues)
+- Email: support@oursprivacy.com

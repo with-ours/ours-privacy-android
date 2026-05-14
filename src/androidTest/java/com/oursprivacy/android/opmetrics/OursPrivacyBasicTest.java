@@ -84,12 +84,10 @@ public class OursPrivacyBasicTest {
         OursPrivacyAPI oursprivacy = new TestUtils.CleanOursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, fakeToken);
         String generatedId1 = oursprivacy.getDistinctId();
         assertThat(generatedId1, startsWith("$device:"));
-        assertEquals(generatedId1, "$device:" + oursprivacy.getAnonymousId());
 
         oursprivacy.reset();
         String generatedId2 = oursprivacy.getDistinctId();
         assertThat(generatedId2, startsWith("$device:"));
-        assertEquals(generatedId2, "$device:" + oursprivacy.getAnonymousId());
         assertNotEquals(generatedId1, generatedId2);
     }
 
@@ -245,36 +243,6 @@ public class OursPrivacyBasicTest {
             properties = message.getJSONObject("properties");
             assertEquals(mapObj1.get("TRACK MAP STRING"), properties.getString("TRACK MAP STRING"));
 
-            oursprivacy.registerSuperProperties(jsonObj2);
-            oursprivacy.registerSuperPropertiesOnce(jsonObj3);
-            oursprivacy.registerSuperPropertiesOnce(jsonObj4);
-            oursprivacy.registerSuperPropertiesMap(mapObj2);
-            oursprivacy.registerSuperPropertiesOnceMap(mapObj3);
-            oursprivacy.registerSuperPropertiesOnceMap(mapObj4);
-
-            oursprivacy.track("event5", null);
-            message = messages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS);
-            assertEquals("event5", message.getString("event"));
-            properties = message.getJSONObject("properties");
-            assertEquals(jsonObj2.getInt("TRACK JSON INT"), properties.getInt("TRACK JSON INT"));
-            assertEquals(jsonObj3.getString("TRACK JSON STRING ONCE"), properties.getString("TRACK JSON STRING ONCE"));
-            assertEquals(mapObj2.get("TRACK MAP INT"), properties.getInt("TRACK MAP INT"));
-            assertEquals(mapObj3.get("TRACK MAP STRING ONCE"), properties.getString("TRACK MAP STRING ONCE"));
-
-            oursprivacy.unregisterSuperProperty("TRACK JSON INT");
-            oursprivacy.track("event6", null);
-            message = messages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS);
-            assertEquals("event6", message.getString("event"));
-            properties = message.getJSONObject("properties");
-            assertFalse(properties.has("TRACK JSON INT"));
-
-            oursprivacy.clearSuperProperties();
-            oursprivacy.track("event7", null);
-            message = messages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS);
-            assertEquals("event7", message.getString("event"));
-            properties = message.getJSONObject("properties");
-            assertFalse(properties.has("TRACK JSON STRING ONCE"));
-
             oursprivacy.track("event8", jsonObj5);
             message = messages.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS);
             assertEquals("event8", message.getString("event"));
@@ -325,7 +293,6 @@ public class OursPrivacyBasicTest {
         assertNull(anonymousUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
         assertNull(peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
 
-        String deviceId = oursprivacy.getAnonymousId();
         oursprivacy.identify("Personal Identity", null);
 
         assertEquals("prop value identified", peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS).getJSONObject("$set").getString("the prop identified"));
@@ -370,7 +337,6 @@ public class OursPrivacyBasicTest {
         assertNull(anonymousUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
         assertNull(peopleUpdates.poll(POLL_WAIT_SECONDS, TimeUnit.SECONDS));
 
-        String deviceId = oursprivacy.getAnonymousId();
         oursprivacy.identify(oursprivacy.getDistinctId(), null);
         assertNull(oursprivacy.getUserId());
 
@@ -386,7 +352,6 @@ public class OursPrivacyBasicTest {
 
         String generatedId = metrics.getDistinctId();
         assertThat(generatedId, startsWith("$device:"));
-        assertEquals(generatedId, "$device:" + metrics.getAnonymousId());
 
         assertNull(metrics.getUserId());
 
@@ -401,7 +366,6 @@ public class OursPrivacyBasicTest {
 
         String generatedId = metrics.getDistinctId();
         assertThat(generatedId, startsWith("$device:"));
-        assertEquals(generatedId, "$device:" + metrics.getAnonymousId());
 
         assertNull(metrics.getUserId());
 
@@ -414,22 +378,19 @@ public class OursPrivacyBasicTest {
     public void testIdentifyAndCheckUserIDAndDeviceID() {
         OursPrivacyAPI metrics = new TestUtils.CleanOursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, "Identify Test Token");
 
-        String generatedId = metrics.getAnonymousId();
-        assertNotNull(metrics.getAnonymousId());
         String eventsDistinctId = metrics.getDistinctId();
-        assertEquals("$device:" + generatedId, eventsDistinctId);
+        assertThat(eventsDistinctId, startsWith("$device:"));
         assertNull(metrics.getUserId());
 
         metrics.identify("Distinct Id", null);
         assertEquals("Distinct Id", metrics.getDistinctId());
-        assertEquals(generatedId, metrics.getAnonymousId());
 
         // once its reset we will only have generated id but user id should be null
         metrics.reset();
-        String generatedId2 = metrics.getAnonymousId();
-        assertNotNull(generatedId2);
-        assertNotSame(generatedId, generatedId2);
-        assertEquals("$device:" + generatedId2, metrics.getDistinctId());
+        String newDistinctId = metrics.getDistinctId();
+        assertNotNull(newDistinctId);
+        assertNotSame(eventsDistinctId, newDistinctId);
+        assertThat(newDistinctId, startsWith("$device:"));
         assertNull(metrics.getUserId());
     }
 
@@ -949,15 +910,6 @@ public class OursPrivacyBasicTest {
         OursPrivacyAPI metricsOne = new OursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, "SAME TOKEN", false, null, true);
         metricsOne.reset();
 
-        JSONObject props;
-        try {
-            props = new JSONObject("{ 'a' : 'value of a', 'b' : 'value of b' }");
-        } catch (JSONException e) {
-            throw new RuntimeException("Can't construct fixture for super properties test.");
-        }
-
-        metricsOne.clearSuperProperties();
-        metricsOne.registerSuperProperties(props);
         metricsOne.identify("Expected Events Identity", null);
 
         // We exploit the fact that any metrics object with the same token
@@ -1034,12 +986,8 @@ public class OursPrivacyBasicTest {
         try {
             JSONObject eventProps = eventMessage.getProperties();
             String sentId = eventProps.getString("distinct_id");
-            String sentA = eventProps.getString("a");
-            String sentB = eventProps.getString("b");
 
             assertEquals("Expected Events Identity", sentId);
-            assertEquals("value of a", sentA);
-            assertEquals("value of b", sentB);
         } catch (JSONException e) {
             fail("Event message has an unexpected shape " + e);
         }
@@ -1103,46 +1051,6 @@ public class OursPrivacyBasicTest {
     }
 
     @Test
-    public void testAlias() {
-        final RemoteService mockPoster = new HttpService() {
-            public byte[] performRequest(String endpointUrl, ProxyServerInteractor interactor, Map<String, Object> params, SSLSocketFactory socketFactory) {
-                try {
-                    assertTrue(params.containsKey("data"));
-                    final String jsonData = Base64Coder.decodeString(params.get("data").toString());
-                    JSONArray msg = new JSONArray(jsonData);
-                    JSONObject event = msg.getJSONObject(0);
-                    JSONObject properties = event.getJSONObject("properties");
-
-                    assertEquals(event.getString("event"), "$create_alias");
-                    assertEquals(properties.getString("distinct_id"), "old id");
-                    assertEquals(properties.getString("alias"), "new id");
-                } catch (JSONException e) {
-                    throw new RuntimeException("Malformed data passed to test mock", e);
-                }
-                return TestUtils.bytes("1\n");
-            }
-        };
-
-        final AnalyticsMessages listener = new AnalyticsMessages(InstrumentationRegistry.getInstrumentation().getContext(), OPConfig.getInstance(InstrumentationRegistry.getInstrumentation().getContext(), null)) {
-            @Override
-            protected RemoteService getPoster() {
-                return mockPoster;
-            }
-        };
-
-        OursPrivacyAPI metrics = new TestUtils.CleanOursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockPreferences, "Test Message Queuing") {
-            @Override
-            protected AnalyticsMessages getAnalyticsMessages() {
-                 return listener;
-            }
-        };
-
-        // Check that we post the alias immediately
-        metrics.identify("old id", null);
-        metrics.alias("new id", "old id");
-    }
-
-    @Test
     public void testMultiInstancesWithInstanceName() throws InterruptedException, JSONException {
         final BlockingQueue<JSONObject> anonymousUpdates = new LinkedBlockingQueue<JSONObject>();
         final BlockingQueue<JSONObject> identifiedUpdates = new LinkedBlockingQueue<JSONObject>();
@@ -1174,42 +1082,6 @@ public class OursPrivacyBasicTest {
             }
         };
     }
-
-    @Test
-    public void testEventTiming() throws InterruptedException {
-        final int MAX_TIMEOUT_POLL = 6500;
-        Future<SharedPreferences> mMockReferrerPreferences;
-        final BlockingQueue<String> mStoredEvents = new LinkedBlockingQueue<>();
-        mMockReferrerPreferences = new TestUtils.EmptyPreferences(InstrumentationRegistry.getInstrumentation().getContext());
-        OursPrivacyAPI mOursPrivacyAPI = new OursPrivacyAPI(InstrumentationRegistry.getInstrumentation().getContext(), mMockReferrerPreferences, "TESTTOKEN", false, null, true) {
-            @Override
-            PersistentIdentity getPersistentIdentity(Context context, Future<SharedPreferences> referrerPreferences, String token, String instanceName) {
-                mPersistentIdentity = super.getPersistentIdentity(context, referrerPreferences, token, instanceName);
-                return mPersistentIdentity;
-            }
-
-        };
-
-        mOursPrivacyAPI.timeEvent("Time Event");
-        assertEquals(1, mPersistentIdentity.getTimeEvents().size());
-
-        mOursPrivacyAPI.track("Time Event");
-        assertEquals(0, mPersistentIdentity.getTimeEvents().size());
-        mOursPrivacyAPI.timeEvent("Time Event1");
-        mOursPrivacyAPI.timeEvent("Time Event2");
-        assertEquals(2, mPersistentIdentity.getTimeEvents().size());
-        mOursPrivacyAPI.clearTimedEvents();
-        assertEquals(0, mPersistentIdentity.getTimeEvents().size());
-        mOursPrivacyAPI.timeEvent("Time Event3");
-        mOursPrivacyAPI.timeEvent("Time Event4");
-        mOursPrivacyAPI.clearTimedEvent("Time Event3");
-        assertEquals(1, mPersistentIdentity.getTimeEvents().size());
-        assertTrue(mPersistentIdentity.getTimeEvents().containsKey("Time Event4"));
-        assertFalse(mPersistentIdentity.getTimeEvents().containsKey("Time Event3"));
-        mOursPrivacyAPI.clearTimedEvent(null);
-        assertEquals(1, mPersistentIdentity.getTimeEvents().size());
-    }
-
 
     @Test
     public void testSessionMetadata() throws InterruptedException, JSONException {

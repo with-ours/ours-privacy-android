@@ -1,0 +1,82 @@
+name: PR Title Validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title-check:
+    name: PR Title Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check PR Title Format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          echo "PR Title: $PR_TITLE"
+          echo "Base Branch: $BASE_BRANCH"
+
+          PREFIX_PART=$(echo "$PR_TITLE" | cut -d: -f1)
+
+          if [[ $PREFIX_PART == *"("*")"* ]]; then
+            BASE_PREFIX="${PREFIX_PART%%(*}"
+          else
+            BASE_PREFIX="$PREFIX_PART"
+          fi
+
+          case "$BASE_PREFIX" in
+            fix|feat|chore|docs|test|refactor|perf|ci|build|revert|release)
+              ;;
+            *)
+              echo "❌ PR title must start with a valid prefix"
+              echo "Current title: $PR_TITLE"
+              echo "Valid prefixes: fix:, feat:, chore:, docs:, test:, refactor:, perf:, ci:, build:, revert:, release:"
+              exit 1
+              ;;
+          esac
+
+          if [[ ! $PR_TITLE =~ ^[a-z]+(\([a-z]+\))?:[[:space:]] ]]; then
+            echo "❌ PR title must have a space after the colon"
+            echo "Current title: $PR_TITLE"
+            exit 1
+          fi
+
+          if [[ $BASE_PREFIX == "release" ]]; then
+            VERSION=$(echo "$PR_TITLE" | grep -oP '\d+\.\d+\.\d+')
+            if [ -z "$VERSION" ]; then
+              echo "❌ Release PR title must include a semver version (e.g., release: 1.1.0)"
+              exit 1
+            fi
+
+            echo "Checking version $VERSION across all files..."
+            ERRORS=""
+
+            GRADLE_VERSION=$(grep "^VERSION_NAME=" gradle.properties | cut -d= -f2)
+            if [ "$GRADLE_VERSION" != "$VERSION" ]; then
+              ERRORS="$ERRORS\n  - gradle.properties: found $GRADLE_VERSION"
+            fi
+
+            if [ -n "$ERRORS" ]; then
+              echo "❌ Version mismatch! PR title says $VERSION but these files don't match:"
+              echo -e "$ERRORS"
+              echo ""
+              echo "All version files must be updated to $VERSION before merging."
+              exit 1
+            fi
+
+            echo "✅ Version $VERSION is consistent (gradle.properties)"
+          fi
+
+          echo "✅ PR title format is valid"

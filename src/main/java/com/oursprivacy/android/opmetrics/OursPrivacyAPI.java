@@ -146,10 +146,6 @@ public class OursPrivacyAPI {
             optOutTracking();
         }
 
-        if (superProperties != null) {
-            registerSuperProperties(superProperties);
-        }
-
         final boolean dbExists = OPDbAdapter.getInstance(mContext, mConfig).getDatabaseFile().exists();
 
         registerOursPrivacyActivityLifecycleCallbacks();
@@ -221,215 +217,6 @@ public class OursPrivacyAPI {
      * @return an instance of OursPrivacyAPI associated with your project
      */
     public static OursPrivacyAPI getInstance(Context context, String token, boolean trackAutomaticEvents) {
-        return getInstance(context, token, false, null, null, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param instanceName The name you want to uniquely identify the OursPrivacy Instance.
-     *      It is useful when you want more than one OursPrivacy instance under the same project token
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, String instanceName, boolean trackAutomaticEvents) {
-        return getInstance(context, token, false, null, instanceName, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param optOutTrackingDefault Whether or not OursPrivacy can start tracking by default. See
-     *     {@link #optOutTracking()}.
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, boolean optOutTrackingDefault, boolean trackAutomaticEvents) {
-        return getInstance(context, token, optOutTrackingDefault, null, null, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param optOutTrackingDefault Whether or not OursPrivacy can start tracking by default. See
-     *     {@link #optOutTracking()}.
-     * @param instanceName The name you want to uniquely identify the OursPrivacy Instance.
-        It is useful when you want more than one OursPrivacy instance under the same project token.
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, boolean optOutTrackingDefault, String instanceName, boolean trackAutomaticEvents) {
-        return getInstance(context, token, optOutTrackingDefault, null, instanceName, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param superProperties A JSONObject containing super properties to register.
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, JSONObject superProperties, boolean trackAutomaticEvents) {
-        return getInstance(context, token, false, superProperties, null, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param superProperties A JSONObject containing super properties to register.
-     * @param instanceName The name you want to uniquely identify the OursPrivacy Instance.
-     *      It is useful when you want more than one OursPrivacy instance under the same project token
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, JSONObject superProperties, String instanceName, boolean trackAutomaticEvents) {
-        return getInstance(context, token, false, superProperties, instanceName, trackAutomaticEvents);
-    }
-
-    /**
-     * Get the instance of OursPrivacyAPI associated with your OursPrivacy project token.
-     *
-     * <p>Use getInstance to get a reference to a shared
-     * instance of OursPrivacyAPI you can use to send events
-     * and People Analytics updates to OursPrivacy.</p>
-     * <p>getInstance is thread safe, but the returned instance is not,
-     * and may be shared with other callers of getInstance.
-     * The best practice is to call getInstance, and use the returned OursPrivacyAPI,
-     * object from a single thread (probably the main UI thread of your application).</p>
-     * <p>If you do choose to track events from multiple threads in your application,
-     * you should synchronize your calls on the instance itself, like so:</p>
-     * <pre>
-     * {@code
-     * OursPrivacyAPI instance = OursPrivacyAPI.getInstance(context, token);
-     * synchronized(instance) { // Only necessary if the instance will be used in multiple threads.
-     *     instance.track(...)
-     * }
-     * }
-     * </pre>
-     *
-     * @param context The application context you are tracking
-     * @param token Your OursPrivacy project token. You can get your project token on the OursPrivacy web site,
-     *     in the settings dialog.
-     * @param optOutTrackingDefault Whether or not OursPrivacy can start tracking by default. See
-     *     {@link #optOutTracking()}.
-     * @param superProperties A JSONObject containing super properties to register.
-     * @param instanceName The name you want to uniquely identify the OursPrivacy Instance.
-     *      It is useful when you want more than one OursPrivacy instance under the same project token
-     * @param trackAutomaticEvents Whether or not to collect common mobile events
-     *                             include app sessions, first app opens, app updated, etc.
-     * @return an instance of OursPrivacyAPI associated with your project
-     */
-    public static OursPrivacyAPI getInstance(Context context, String token, boolean optOutTrackingDefault, JSONObject superProperties, String instanceName, boolean trackAutomaticEvents) {
         if (null == token || null == context) {
             return null;
         }
@@ -439,16 +226,15 @@ public class OursPrivacyAPI {
             if (null == sReferrerPrefs) {
                 sReferrerPrefs = sPrefsLoader.loadPreferences(context, OPConfig.REFERRER_PREFS_NAME, null);
             }
-            String instanceKey = instanceName != null ? instanceName : token;
-            Map <Context, OursPrivacyAPI> instances = sInstanceMap.get(instanceKey);
+            Map<Context, OursPrivacyAPI> instances = sInstanceMap.get(token);
             if (null == instances) {
                 instances = new HashMap<Context, OursPrivacyAPI>();
-                sInstanceMap.put(instanceKey, instances);
+                sInstanceMap.put(token, instances);
             }
 
             OursPrivacyAPI instance = instances.get(appContext);
             if (null == instance && ConfigurationChecker.checkBasicConfiguration(appContext)) {
-                instance = new OursPrivacyAPI(appContext, sReferrerPrefs, token, optOutTrackingDefault, superProperties, instanceName, trackAutomaticEvents);
+                instance = new OursPrivacyAPI(appContext, sReferrerPrefs, token, false, null, null, trackAutomaticEvents);
                 registerAppLinksListeners(context, instance);
                 instances.put(appContext, instance);
             }
@@ -457,18 +243,6 @@ public class OursPrivacyAPI {
 
             return instance;
         }
-    }
-
-    /**
-     * Controls whether to automatically send the client IP Address as part of event tracking.
-     *
-     * <p> With an IP address, geo-location is possible down to neighborhoods within a city,
-     * although the OursPrivacy Dashboard will just show you city level location specificity.
-     *
-     * @param useIpAddressForGeolocation If true, automatically send the client IP Address. Defaults to true.
-     */
-    public void setUseIpAddressForGeolocation(boolean useIpAddressForGeolocation) {
-        mConfig.setUseIpAddressForGeolocation(useIpAddressForGeolocation);
     }
 
     /**
@@ -499,42 +273,6 @@ public class OursPrivacyAPI {
     }
 
     /**
-     * Set whether the request payload should be GZIP-compressed before being sent.
-     *
-     * @param shouldGzipRequestPayload boolean, true to enable GZIP compression, false otherwise.
-     */
-    public void setShouldGzipRequestPayload(boolean shouldGzipRequestPayload) {
-        mConfig.setShouldGzipRequestPayload(shouldGzipRequestPayload);
-    }
-
-    /**
-     * Get whether the request payload is currently set to be GZIP-compressed.
-     *
-     * @return boolean, whether GZIP compression is enabled
-     */
-    public boolean shouldGzipRequestPayload() {
-        return mConfig.shouldGzipRequestPayload();
-    }
-
-    /**
-     * Set an integer number of bytes, the maximum size limit to the OursPrivacy database.
-     *
-     * @param maximumDatabaseLimit an integer number of bytes, the maximum size limit to the OursPrivacy database.
-     */
-    public void setMaximumDatabaseLimit(int maximumDatabaseLimit) {
-        mConfig.setMaximumDatabaseLimit(maximumDatabaseLimit);
-    }
-
-    /**
-     * Get  the maximum size limit to the OursPrivacy database.
-     *
-     * @return an integer number of bytes, the maximum size limit to the OursPrivacy database.
-     */
-    public int getMaximumDatabaseLimit() {
-        return mConfig.getMaximumDatabaseLimit();
-    }
-
-    /**
      * Set the base URL used for OursPrivacy API requests.
      * Useful if you need to proxy OursPrivacy requests. Defaults to https://api.oursprivacy.com/api/v1.
      * To route data to OursPrivacy's EU servers, set to https://api-eu.oursprivacy.com
@@ -558,35 +296,6 @@ public class OursPrivacyAPI {
     }
 
     public Boolean getTrackAutomaticEvents() { return mTrackAutomaticEvents; }
-    /**
-     * This function creates a distinct_id alias from alias to distinct_id. If distinct_id is null, then it will create an alias
-     * to the current events distinct_id, which may be the distinct_id randomly generated by the OursPrivacy library
-     * before {@link #identify(String, HashMap)} is called.
-     *
-     * <p>This call does not identify the user after. You must still call {@link #identify(String, HashMap)} if you wish the new alias to be used for Events and People.
-     *
-     * @param alias the new value that should represent distinct_id.
-     * @param distinct_id the old distinct_id that alias will be mapped to.
-     */
-    public void alias(String alias, String distinct_id) {
-        if (hasOptedOutTracking()) return;
-        if (distinct_id == null) {
-            distinct_id = getDistinctId();
-        }
-        if (alias.equals(distinct_id)) {
-            OPLog.w(LOGTAG, "Attempted to alias identical distinct_ids " + alias + ". Alias message will not be sent.");
-            return;
-        }
-        try {
-            final JSONObject j = new JSONObject();
-            j.put("alias", alias);
-            j.put("distinct_id", distinct_id);
-            track("$create_alias", j);
-        } catch (final JSONException e) {
-            OPLog.e(LOGTAG, "Failed to alias", e);
-        }
-        flush();
-    }
 
     /**
      * Associate all future calls to {@link #track(String, JSONObject)} with the user identified by
@@ -633,61 +342,6 @@ public class OursPrivacyAPI {
                 }
             }
         }
-    }
-
-    /**
-     * Begin timing of an event. Calling timeEvent("Thing") will not send an event, but
-     * when you eventually call track("Thing"), your tracked event will be sent with a "$duration"
-     * property, representing the number of seconds between your calls.
-     *
-     * @param eventName the name of the event to track with timing.
-     */
-    public void timeEvent(final String eventName) {
-        if (hasOptedOutTracking()) return;
-        final long writeTime = System.currentTimeMillis();
-        synchronized (mEventTimings) {
-            mEventTimings.put(eventName, writeTime);
-            mPersistentIdentity.addTimeEvent(eventName, writeTime);
-        }
-    }
-
-    /**
-     * Clears all current event timings.
-     *
-     */
-    public void clearTimedEvents() {
-        synchronized (mEventTimings) {
-            mEventTimings.clear();
-            mPersistentIdentity.clearTimedEvents();
-        }
-    }
-
-    /**
-     * Clears the event timing for an event.
-     *
-     * @param eventName the name of the timed event to clear.
-     */
-    public void clearTimedEvent(final String eventName) {
-        synchronized (mEventTimings) {
-            mEventTimings.remove(eventName);
-            mPersistentIdentity.removeTimedEvent(eventName);
-        }
-    }
-
-    /**
-     * Retrieves the time elapsed for the named event since timeEvent() was called.
-     *
-     * @param eventName the name of the event to be tracked that was previously called with timeEvent()
-     *
-     * @return Time elapsed since {@link #timeEvent(String)} was called for the given eventName.
-     */
-    public double eventElapsedTime(final String eventName) {
-        final long currentTime = System.currentTimeMillis();
-        Long startTime;
-        synchronized (mEventTimings) {
-            startTime = mEventTimings.get(eventName);
-        }
-        return startTime == null ? 0 : (double)((currentTime - startTime) / 1000);
     }
 
     /**
@@ -761,41 +415,16 @@ public class OursPrivacyAPI {
     }
 
     /**
-     * Returns a json object of the user's current super properties
-     *
-     *<p>SuperProperties are a collection of properties that will be sent with every event to OursPrivacy,
-     * and persist beyond the lifetime of your application.
-     *
-     * @return Super properties for this OursPrivacy instance.
-     */
-      public JSONObject getSuperProperties() {
-          JSONObject ret = new JSONObject();
-          mPersistentIdentity.addSuperPropertiesToObject(ret);
-          return ret;
-      }
-
-    /**
      * Returns the string id currently being used to uniquely identify the user. Before any calls to
      * {@link #identify(String, HashMap)}, this will be an id automatically generated by the library.
      *
      *
      * @return The distinct id that uniquely identifies the current user.
      *
-     * @see #identify(String, HashMap) 
+     * @see #identify(String, HashMap)
      */
     public String getDistinctId() {
         return mPersistentIdentity.getEventsDistinctId();
-    }
-
-     /**
-     * Returns the anonymoous id currently being used to uniquely identify the device and all
-     * with events sent using {@link #track(String, JSONObject)} will have this id as a device
-     * id
-     *
-     * @return The device id associated with event tracking
-     */
-    public String getAnonymousId() {
-        return mPersistentIdentity.getAnonymousId();
     }
 
     /**
@@ -808,141 +437,9 @@ public class OursPrivacyAPI {
         return mPersistentIdentity.getEventsUserId();
     }
 
-    /**
-     * Register properties that will be sent with every subsequent call to {@link #track(String, JSONObject)}.
-     *
-     * <p>SuperProperties are a collection of properties that will be sent with every event to OursPrivacy,
-     * and persist beyond the lifetime of your application.
-     *
-     * <p>Setting a superProperty with registerSuperProperties will store a new superProperty,
-     * possibly overwriting any existing superProperty with the same name (to set a
-     * superProperty only if it is currently unset, use {@link #registerSuperPropertiesOnce(JSONObject)})
-     *
-     * <p>SuperProperties will persist even if your application is taken completely out of memory.
-     * to remove a superProperty, call {@link #unregisterSuperProperty(String)} or {@link #clearSuperProperties()}
-     *
-     * @param superProperties    A Map containing super properties to register
-     *
-     * See also {@link #registerSuperProperties(org.json.JSONObject)}
-     */
-    public void registerSuperPropertiesMap(Map<String, Object> superProperties) {
-        if (hasOptedOutTracking()) return;
-        if (null == superProperties) {
-            OPLog.e(LOGTAG, "registerSuperPropertiesMap does not accept null properties");
-            return;
-        }
-
-        try {
-            registerSuperProperties(new JSONObject(superProperties));
-        } catch (NullPointerException e) {
-            OPLog.w(LOGTAG, "Can't have null keys in the properties of registerSuperPropertiesMap");
-        }
+    private String getAnonymousId() {
+        return mPersistentIdentity.getAnonymousId();
     }
-
-    /**
-     * Register properties that will be sent with every subsequent call to {@link #track(String, JSONObject)}.
-     *
-     * <p>SuperProperties are a collection of properties that will be sent with every event to OursPrivacy,
-     * and persist beyond the lifetime of your application.
-     *
-     * <p>Setting a superProperty with registerSuperProperties will store a new superProperty,
-     * possibly overwriting any existing superProperty with the same name (to set a
-     * superProperty only if it is currently unset, use {@link #registerSuperPropertiesOnce(JSONObject)})
-     *
-     * <p>SuperProperties will persist even if your application is taken completely out of memory.
-     * to remove a superProperty, call {@link #unregisterSuperProperty(String)} or {@link #clearSuperProperties()}
-     *
-     * @param superProperties    A JSONObject containing super properties to register
-     * @see #registerSuperPropertiesOnce(JSONObject)
-     * @see #unregisterSuperProperty(String)
-     * @see #clearSuperProperties()
-     */
-    public void registerSuperProperties(JSONObject superProperties) {
-        if (hasOptedOutTracking()) return;
-        mPersistentIdentity.registerSuperProperties(superProperties);
-    }
-
-    /**
-     * Remove a single superProperty, so that it will not be sent with future calls to {@link #track(String, JSONObject)}.
-     *
-     * <p>If there is a superProperty registered with the given name, it will be permanently
-     * removed from the existing superProperties.
-     * To clear all superProperties, use {@link #clearSuperProperties()}
-     *
-     * @param superPropertyName name of the property to unregister
-     * @see #registerSuperProperties(JSONObject)
-     */
-    public void unregisterSuperProperty(String superPropertyName) {
-        if (hasOptedOutTracking()) return;
-        mPersistentIdentity.unregisterSuperProperty(superPropertyName);
-    }
-
-    /**
-     * Register super properties for events, only if no other super property with the
-     * same names has already been registered.
-     *
-     * <p>Calling registerSuperPropertiesOnce will never overwrite existing properties.
-     *
-     * @param superProperties A Map containing the super properties to register.
-     *
-     * See also {@link #registerSuperPropertiesOnce(org.json.JSONObject)}
-     */
-    public void registerSuperPropertiesOnceMap(Map<String, Object> superProperties) {
-        if (hasOptedOutTracking()) return;
-        if (null == superProperties) {
-            OPLog.e(LOGTAG, "registerSuperPropertiesOnceMap does not accept null properties");
-            return;
-        }
-
-        try {
-            registerSuperPropertiesOnce(new JSONObject(superProperties));
-        } catch (NullPointerException e) {
-            OPLog.w(LOGTAG, "Can't have null keys in the properties of registerSuperPropertiesOnce!");
-        }
-    }
-
-    /**
-     * Register super properties for events, only if no other super property with the
-     * same names has already been registered.
-     *
-     * <p>Calling registerSuperPropertiesOnce will never overwrite existing properties.
-     *
-     * @param superProperties A JSONObject containing the super properties to register.
-     * @see #registerSuperProperties(JSONObject)
-     */
-    public void registerSuperPropertiesOnce(JSONObject superProperties) {
-        if (hasOptedOutTracking()) return;
-        mPersistentIdentity.registerSuperPropertiesOnce(superProperties);
-    }
-
-    /**
-     * Erase all currently registered superProperties.
-     *
-     * <p>Future tracking calls to OursPrivacy will not contain the specific
-     * superProperties registered before the clearSuperProperties method was called.
-     *
-     * <p>To remove a single superProperty, use {@link #unregisterSuperProperty(String)}
-     *
-     * @see #registerSuperProperties(JSONObject)
-     */
-    public void clearSuperProperties() {
-        mPersistentIdentity.clearSuperProperties();
-    }
-
-    /**
-     * Updates super properties in place. Given a SuperPropertyUpdate object, will
-     * pass the current values of SuperProperties to that update and replace all
-     * results with the return value of the update. Updates are synchronized on
-     * the underlying super properties store, so they are guaranteed to be thread safe
-     * (but long running updates may slow down your tracking.)
-     *
-     * @param update A function from one set of super properties to another. The update should not return null.
-     */
-    public void updateSuperProperties(SuperPropertyUpdate update) {
-        if (hasOptedOutTracking()) return;
-        mPersistentIdentity.updateSuperProperties(update);
-    }
-
 
     /**
      * Clears tweaks and all distinct_ids, superProperties, and push registrations from persistent storage.
@@ -1037,8 +534,7 @@ public class OursPrivacyAPI {
     }
     /**
      * Will return true if the user has opted out from tracking. See {@link #optOutTracking()} and
-     * {@link
-     * OursPrivacyAPI#getInstance(Context, String, boolean, JSONObject, String, boolean)} for more information.
+     * {@link OursPrivacyAPI#getInstance(Context, String, boolean)} for more information.
      *
      * @return true if user has opted out from tracking. Defaults to false.
      */
@@ -1053,7 +549,7 @@ public class OursPrivacyAPI {
      * This is only available if the android version is >= 16.
      *
      * This function is automatically called when the library is initialized unless you explicitly
-     * set com.oursprivacy.android.MPConfig.AutoShowOursPrivacyUpdates to false in your AndroidManifest.xml
+     * set com.oursprivacy.android.Config.AutoShowOursPrivacyUpdates to false in your AndroidManifest.xml
      */
     @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
     /* package */ void registerOursPrivacyActivityLifecycleCallbacks() {

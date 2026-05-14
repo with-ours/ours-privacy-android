@@ -1,0 +1,10 @@
+# Copy this file to local.properties and fill in your values.
+# local.properties is gitignored — never commit real tokens.
+
+# Your OursPrivacy project token (used by the demo app)
+OURSPRIVACY_TOKEN=your_token_here
+
+# Optional: point the demo at the local payload recorder instead of production.
+# Use 10.0.2.2 for the Android emulator (maps to your machine's localhost).
+# Use your machine's LAN IP for a physical device.
+# RECORDER_URL=http://10.0.2.2:8765

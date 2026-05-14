@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.*
 import com.oursprivacy.oursprivacydemo.ui.theme.OursPrivacyandroidTheme
 
-const val OURSPRIVACY_PROJECT_TOKEN = ""
+val OURSPRIVACY_PROJECT_TOKEN: String get() = BuildConfig.OURSPRIVACY_TOKEN
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
