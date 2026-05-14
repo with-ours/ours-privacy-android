@@ -324,6 +324,37 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void backToBackFlushes_doNotDropTheSecondFlush() throws Exception {
+        // Regression: scheduleFlush() used to coalesce against the same message
+        // code as user-initiated flushes, so when the worker drained an explicit
+        // FLUSH it would removeMessages(FLUSH) — silently killing the next
+        // user-initiated FLUSH already queued behind it. Reset() exercises this
+        // pattern internally (flushNow before persistence wipe + caller's flush).
+        // Park the worker before any of the messages drain to make the race
+        // deterministic.
+        final OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        final java.util.concurrent.CountDownLatch parked = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        op.parkWorkerForTests(parked, release);
+        assertTrue("worker parked", parked.await(IDLE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS));
+
+        op.flush();
+        op.track("between_flushes");
+        op.flush();
+
+        release.countDown();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        assertEquals("second FLUSH must survive the first FLUSH's reschedule",
+                1, mNetwork.callCount());
+        assertEquals("between_flushes",
+                mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0).getString("event"));
+    }
+
+    @Test
     public void reset_regeneratesVisitorIdAndClearsDefaults() throws Exception {
         final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);

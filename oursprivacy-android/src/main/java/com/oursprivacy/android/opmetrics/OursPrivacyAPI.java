@@ -348,6 +348,12 @@ public class OursPrivacyAPI {
         if (mMessages != null) mMessages.hardKill();
     }
 
+    /** Test-only: park the worker so the caller can deterministically stack messages behind it. */
+    void parkWorkerForTests(java.util.concurrent.CountDownLatch parked,
+                            java.util.concurrent.CountDownLatch release) {
+        if (mMessages != null) mMessages.parkWorker(parked, release);
+    }
+
     void onBackground() {
         if (mConfig != null && mConfig.getFlushOnBackground()) {
             flush();
