@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0-alpha.0
+## v2.0.0
 
 Breaking changes — see README → Migration from 1.x for upgrade instructions.
 
