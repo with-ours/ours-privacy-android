@@ -33,10 +33,6 @@ fun UtilityPage(navController: NavHostController) {
     val oursprivacy = OursPrivacyAPI.getInstance(context, OURSPRIVACY_PROJECT_TOKEN, true)
 
     val utilityActions = listOf(
-        Triple("Create Alias", "Event: \"Create Alias!\"", {
-            println("Creating alias for a user")
-            oursprivacy.alias("new_alias", oursprivacy.distinctId)
-        }),
         Triple("Reset", "Event: \"Reset!\"", {
             println("Resetting OursPrivacy instance")
             oursprivacy.reset()
