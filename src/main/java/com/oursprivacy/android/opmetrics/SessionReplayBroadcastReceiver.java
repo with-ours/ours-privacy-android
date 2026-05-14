@@ -39,11 +39,6 @@ public class SessionReplayBroadcastReceiver extends BroadcastReceiver {
                     OPLog.d(LOGTAG, "Broadcast extras data: " + serializableData);
                 }
             }
-            if (data != null && data.containsKey(SessionReplay.REPLAY_ID_KEY)) {
-                sdkInstance.registerSuperPropertiesMap(data);
-            }
-        } else if (SessionReplay.UNREGISTER_ACTION.equals(action)) {
-            sdkInstance.unregisterSuperProperty(SessionReplay.REPLAY_ID_KEY);
         }
     }
 }

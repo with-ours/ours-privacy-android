@@ -237,13 +237,6 @@ public class OPConfig {
             setEventsEndpointWithBaseURL(OPConstants.URL.OURSPRIVACY_API);
         }
 
-        String identifyEndpoint = metaData.getString("com.oursprivacy.android.Config.IdentifyEndpoint");
-        if (identifyEndpoint != null) {
-            setIdentifyEndpoint(noUseIpAddressForGeolocationSetting ? identifyEndpoint : getEndPointWithIpTrackingParam(identifyEndpoint, getUseIpAddressForGeolocation()));
-        } else {
-            setIdentifyEndpointWithBaseURL(OPConstants.URL.OURSPRIVACY_API);
-        }
-
         OPLog.v(LOGTAG, toString());
     }
 
@@ -293,7 +286,7 @@ public class OPConfig {
         return mEventsEndpoint;
     }
 
-    public String getIdentifyEndpoint() { return mIdentifyEndpoint; }
+    public String getIdentifyEndpoint() { return getEventsEndpoint(); }
 
     public boolean getTrackAutomaticEvents() { return mTrackAutomaticEvents; }
 
@@ -302,10 +295,8 @@ public class OPConfig {
         setProxyServerInteractor(interactor);
     }
 
-    // In parity with iOS SDK
     public void setServerURL(String serverURL) {
         setEventsEndpointWithBaseURL(serverURL);
-        setIdentifyEndpointWithBaseURL(serverURL);
     }
 
     private String getEndPointWithIpTrackingParam(String endPoint, boolean ifUseIpAddressForGeolocation) {
@@ -322,13 +313,6 @@ public class OPConfig {
 
     private void setEventsEndpoint(String eventsEndpoint) {
         mEventsEndpoint = eventsEndpoint;
-    }
-
-    private void setIdentifyEndpoint(String idenfityEndpoint) { mIdentifyEndpoint = idenfityEndpoint; }
-
-    private void setIdentifyEndpointWithBaseURL(String baseURL) {
-        setIdentifyEndpoint(getEndPointWithIpTrackingParam(baseURL +
-                OPConstants.URL.IDENTIFY, getUseIpAddressForGeolocation()));
     }
 
     public int getMinimumSessionDuration() {
@@ -438,7 +422,6 @@ public class OPConfig {
     private final boolean mDisableExceptionHandler;
     private boolean mTrackAutomaticEvents = true;
     private String mEventsEndpoint;
-    private String mIdentifyEndpoint;
     private int mFlushBatchSize;
     private boolean shouldGzipRequestPayload;
 
