@@ -1,12 +1,12 @@
 # Ours Privacy Android SDK
 
-[![Maven Central](https://img.shields.io/maven-central/v/com.oursprivacy.android/oursprivacy-android)](https://central.sonatype.com/artifact/com.oursprivacy.android/oursprivacy-android)
+[![Maven Central](https://img.shields.io/maven-central/v/com.oursprivacy/oursprivacy-android)](https://central.sonatype.com/artifact/com.oursprivacy/oursprivacy-android)
 [![Apache License](https://img.shields.io/github/license/with-ours/ours-privacy-android)](https://oursprivacy.com)
 [![Documentation](https://img.shields.io/badge/Documentation-blue)](https://docs.oursprivacy.com/docs/android-sdk)
 
 Privacy-first analytics for Android.
 
-- [Maven Central](https://central.sonatype.com/artifact/com.oursprivacy.android/oursprivacy-android)
+- [Maven Central](https://central.sonatype.com/artifact/com.oursprivacy/oursprivacy-android)
 - [GitHub](https://github.com/with-ours/ours-privacy-android)
 - [Docs](https://docs.oursprivacy.com/docs/android-sdk)
 
@@ -35,10 +35,10 @@ Privacy-first analytics for Android.
 
 ### 1. Install
 
-Add to your app's `build.gradle` dependencies:
+Add to your app's `build.gradle` dependencies (use the latest version from [Maven Central](https://central.sonatype.com/artifact/com.oursprivacy/oursprivacy-android)):
 
 ```gradle
-implementation "com.oursprivacy.android:oursprivacy-android:2.0.0"
+implementation "com.oursprivacy:oursprivacy-android:<latest>"
 ```
 
 Make sure `mavenCentral()` is listed in your repositories block.
@@ -247,7 +247,7 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
         "device_model": "Pixel 8",
         "screen_width": 1080,
         "screen_height": 2400,
-        "version": "2.0.0"
+        "version": "<sdk-version>"
       }
     }
   ]

@@ -37,6 +37,7 @@ public class OursPrivacyIntegrationTest {
 
     private Context mContext;
     private CapturingRemoteService mNetwork;
+    private final java.util.List<OursPrivacyAPI> mInstances = new java.util.ArrayList<>();
 
     @Before
     public void setUp() {
@@ -50,12 +51,22 @@ public class OursPrivacyIntegrationTest {
 
     @After
     public void tearDown() {
+        // Kill every worker HandlerThread this test started. Without this, leaked
+        // workers keep firing scheduled flushes against the next test's mNetwork.
+        for (OursPrivacyAPI op : mInstances) op.shutdownForTests();
+        mInstances.clear();
         AnalyticsMessages.sTestRemoteService = null;
+    }
+
+    private OursPrivacyAPI newApi() {
+        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        mInstances.add(op);
+        return op;
     }
 
     @Test
     public void track_track_flush_emitsOneEnvelopeWithBothEvents() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.track("event_one", jsonOf("position", 1));
@@ -91,7 +102,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void track_flush_track_flush_emitsTwoSeparateEnvelopes() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.track("first_batch_event");
@@ -117,7 +128,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void identify_carriesUserPropertiesAndCamelCaseToSnakeCase() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.identify(OursPrivacyUserProperties.builder()
@@ -147,7 +158,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void setVisitorId_flipsIsManuallySetIdFlagOnEnvelope() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.setVisitorId("custom-visitor-id-from-web");
@@ -163,7 +174,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void defaultUserCustomPropertiesMergeIntoIdentifyAndTrack() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .defaultUserCustomProperties(jsonOf("tier", "gold"))
                 .build());
@@ -193,7 +204,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void consentIsOmittedWhenBothDefaultsAndPerCallAreEmpty() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .defaultUserCustomProperties(jsonOf("plan", "pro"))
                 .build());
@@ -210,7 +221,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void consentMergesWhenEitherSideHasData() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .defaultUserConsentProperties(jsonOf("marketing", true))
                 .build());
@@ -230,7 +241,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void trackDeepLink_extractsUtmAndFiresDeepLinkOpened() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.trackDeepLink("https://example.com/landing?utm_source=newsletter&utm_campaign=spring&gclid=abc123");
@@ -248,7 +259,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void trackDeepLink_setsVisitorIdWhenOursVisitorIdParamPresent() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.trackDeepLink("https://example.com/?ours_visitor_id=visitor-from-web-xyz");
@@ -262,7 +273,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void optOut_clearsQueuedEventsAndDropsSubsequentTracks() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.track("queued_before_opt_out");
@@ -277,7 +288,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void defaultEventPropertiesAreMergedIntoEveryTrack() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .defaultEventProperties(jsonOf("app_version", "2.0.0"))
                 .build());
@@ -296,7 +307,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void defaultPropertiesIncludeDeviceAndOsFields() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         op.track("first_event");
@@ -314,7 +325,7 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void reset_regeneratesVisitorIdAndClearsDefaults() throws Exception {
-        final OursPrivacyAPI op = new OursPrivacyAPI(mContext);
+        final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
         final String visitorBefore = op.getVisitorId();

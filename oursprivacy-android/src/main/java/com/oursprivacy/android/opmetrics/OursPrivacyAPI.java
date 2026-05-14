@@ -343,6 +343,11 @@ public class OursPrivacyAPI {
         return mMessages.awaitWorkerIdle(timeoutMs);
     }
 
+    /** Test-only: stop the worker thread. Prevents leaked HandlerThreads from bleeding into the next test. */
+    void shutdownForTests() {
+        if (mMessages != null) mMessages.hardKill();
+    }
+
     void onBackground() {
         if (mConfig != null && mConfig.getFlushOnBackground()) {
             flush();
@@ -426,6 +431,7 @@ public class OursPrivacyAPI {
         }
     }
 
+    @SuppressWarnings("deprecation")
     private int packageVersionCode() {
         try {
             final PackageInfo info = mContext.getPackageManager()
