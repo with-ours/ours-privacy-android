@@ -6,434 +6,194 @@ import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.Bundle;
 
-import androidx.annotation.Nullable;
 import com.oursprivacy.android.BuildConfig;
 import com.oursprivacy.android.util.OPConstants;
 import com.oursprivacy.android.util.OPLog;
-import com.oursprivacy.android.util.ProxyServerInteractor;
 import com.oursprivacy.android.util.OfflineMode;
+import com.oursprivacy.android.util.ProxyServerInteractor;
 
 import java.security.GeneralSecurityException;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 
-
 /**
- * Stores global configuration options for the OursPrivacy library. You can enable and disable configuration
- * options using &lt;meta-data&gt; tags inside of the &lt;application&gt; tag in your AndroidManifest.xml.
- * All settings are optional, and default to reasonable recommended values. Most users will not have to
- * set any options.
+ * Global configuration for the SDK. Most callers don't touch this directly — the
+ * defaults are picked up from {@code <meta-data>} entries in {@code AndroidManifest.xml}
+ * under the {@code com.oursprivacy.android.Config.*} prefix.
  *
- * OursPrivacy understands the following options:
- *
+ * <p>Supported manifest keys:
  * <dl>
- *     <dt>com.oursprivacy.android.Config.EnableDebugLogging</dt>
- *     <dd>A boolean value. If true, emit more detailed log messages. Defaults to false</dd>
- *
- *     <dt>com.oursprivacy.android.Config.BulkUploadLimit</dt>
- *     <dd>An integer count of messages, the maximum number of messages to queue before an upload attempt. This value should be less than 50.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.FlushInterval</dt>
- *     <dd>An integer number of milliseconds, the maximum time to wait before an upload if the bulk upload limit isn't reached.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.FlushBatchSize</dt>
- *     <dd>Maximum number of events/updates to send in a single network request</dd>
- *
- *     <dt>com.oursprivacy.android.Config.FlushOnBackground</dt>
- *     <dd>A boolean value. If false, the library will not flush the event and people queues when the app goes into the background. Defaults to true.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.DebugFlushInterval</dt>
- *     <dd>An integer number of milliseconds, the maximum time to wait before an upload if the bulk upload limit isn't reached in debug mode.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.DataExpiration</dt>
- *     <dd>An integer number of milliseconds, the maximum age of records to send to OursPrivacy. Corresponds to OursPrivacy's server-side limit on record age.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.MinimumDatabaseLimit</dt>
- *     <dd>An integer number of bytes. OursPrivacy attempts to limit the size of its persistent data
- *          queue based on the storage capacity of the device, but will always allow queuing below this limit. Higher values
- *          will take up more storage even when user storage is very full.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.MaximumDatabaseLimit</dt>
- *     <dd>An integer number of bytes, the maximum size limit to the OursPrivacy database. </dd>
- *
- *     <dt>com.oursprivacy.android.Config.ResourcePackageName</dt>
- *     <dd>A string java package name. Defaults to the package name of the Application. Users should set if the package name of their R class is different from the application package name due to application id settings.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.DisableAppOpenEvent</dt>
- *     <dd>A boolean value. If true, do not send an "$app_open" event when the OursPrivacyAPI object is created for the first time. Defaults to true - the $app_open event will not be sent by default.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.DisableExceptionHandler</dt>
- *     <dd>A boolean value. If true, do not automatically capture app crashes. "App Crashed" events won't show up on OursPrivacy. Defaults to false.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.EventsEndpoint</dt>
- *     <dd>A string URL. If present, the library will attempt to send events to this endpoint rather than to the default OursPrivacy endpoint.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.PeopleEndpoint</dt>
- *     <dd>A string URL. If present, the library will attempt to send people updates to this endpoint rather than to the default OursPrivacy endpoint.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.GroupsEndpoint</dt>
- *     <dd>A string URL. If present, the library will attempt to send group updates to this endpoint rather than to the default OursPrivacy endpoint.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.MinimumSessionDuration</dt>
- *     <dd>An integer number. The minimum session duration (ms) that is tracked in automatic events. Defaults to 10000 (10 seconds).</dd>
- *
- *     <dt>com.oursprivacy.android.Config.SessionTimeoutDuration</dt>
- *     <dd>An integer number. The maximum session duration (ms) that is tracked in automatic events. Defaults to Integer.MAX_VALUE (no maximum session duration).</dd>
- *
- *     <dt>com.oursprivacy.android.Config.UseIpAddressForGeolocation</dt>
- *     <dd>A boolean value. If true, OursPrivacy will automatically determine city, region and country data using the IP address of the client.Defaults to true.</dd>
- *
- *     <dt>com.oursprivacy.android.Config.RemoveLegacyResidualFiles</dt>
- *     <dd>A boolean value. If true, OursPrivacy will remove the residual files from legacy versions such as images produced by deprecated Messages and Experiment features. Defaults to false.</dd>
+ *   <dt>EnableDebugLogging</dt>      <dd>boolean. Verbose log output. Default false.</dd>
+ *   <dt>BulkUploadLimit</dt>         <dd>int. Queue size that triggers an auto-flush. Default 40.</dd>
+ *   <dt>FlushInterval</dt>           <dd>int ms. Time-based auto-flush. Default 10000.</dd>
+ *   <dt>FlushBatchSize</dt>          <dd>int. Events per POST. Clamped to 50.</dd>
+ *   <dt>FlushOnBackground</dt>       <dd>boolean. Flush when the app goes background. Default true.</dd>
+ *   <dt>DisableAppOpenEvent</dt>     <dd>boolean. Suppress the automatic {@code $app_open}. Default true.</dd>
+ *   <dt>DisableExceptionHandler</dt> <dd>boolean. Don't auto-capture uncaught exceptions. Default false.</dd>
+ *   <dt>MinimumSessionDuration</dt>  <dd>int ms. Min duration for {@code $ae_session}. Default 10000.</dd>
+ *   <dt>SessionTimeoutDuration</dt>  <dd>int ms. Max session duration. Default {@link Integer#MAX_VALUE}.</dd>
+ *   <dt>GzipRequestPayload</dt>      <dd>boolean. Gzip the POST body. Default false.</dd>
  * </dl>
- *
  */
-public class OPConfig {
+public final class OPConfig {
 
     public static final String VERSION = BuildConfig.OURSPRIVACY_VERSION;
 
     public static boolean DEBUG = false;
 
-    // Name for persistent storage of app referral SharedPreferences
-    /* package */ static final String REFERRER_PREFS_NAME = "com.oursprivacy.android.opmetrics.ReferralInfo";
-
-    /**
-     * Retrieves a new instance of OPConfig with configuration settings loaded from the provided context.
-     * This method creates a new instance each time it is called, allowing for multiple configurations
-     * within the same application.
-     *
-     * Since version 7.4.0, OPConfig is no longer a Singleton, in favor of supporting multiple,
-     * distinct configurations for different OursPrivacy instances. This change allows greater flexibility
-     * in scenarios where different parts of an application require different OursPrivacy configurations,
-     * such as different endpoints or settings.
-     *
-     * It's important for users of this method to manage the lifecycle of the returned OPConfig instances
-     * themselves. Each call will result in a new configuration instance based on the application's
-     * metadata, and it's the responsibility of the caller to maintain any necessary references to these
-     * instances to use them later in their application.
-     *
-     * @param context The context used to load OursPrivacy configuration. It's recommended to provide
-     *                an ApplicationContext to avoid potential memory leaks.
-     * @return A new instance of OPConfig with settings loaded from the context's application metadata.
-     */
-    public static OPConfig getInstance(Context context, @Nullable String instanceName) {
-        return readConfig(context.getApplicationContext(), instanceName);
+    public static OPConfig getInstance(Context context) {
+        return readConfig(context.getApplicationContext());
     }
 
-    /**
-     * The OursPrivacyAPI will use the system default SSL socket settings under ordinary circumstances.
-     * That means it will ignore settings you associated with the default SSLSocketFactory in the
-     * schema registry or in underlying HTTP libraries. If you'd prefer for OursPrivacy to use your
-     * own SSL settings, you'll need to call setSSLSocketFactory early in your code, like this
-     *
-     * {@code
-     * <pre>
-     *     OPConfig.getInstance(context).setSSLSocketFactory(someCustomizedSocketFactory);
-     * </pre>
-     * }
-     *
-     * Your settings will be globally available to all OursPrivacy instances, and will be used for
-     * all SSL connections in the library. The call is thread safe, but should be done before
-     * your first call to OursPrivacyAPI.getInstance to insure that the library never uses it's
-     * default.
-     *
-     * The given socket factory may be used from multiple threads, which is safe for the system
-     * SSLSocketFactory class, but if you pass a subclass you should ensure that it is thread-safe
-     * before passing it to OursPrivacy.
-     *
-     * @param factory an SSLSocketFactory that
-     */
-    public synchronized void setSSLSocketFactory(SSLSocketFactory factory) {
-        mSSLSocketFactory = factory;
-    }
-
-    /**
-     * {@link OfflineMode} allows OursPrivacy to be in-sync with client offline internal logic.
-     * If you want to integrate your own logic with OursPrivacy you'll need to call
-     * {@link #setOfflineMode(OfflineMode)} early in your code, like this
-     *
-     * {@code
-     * <pre>
-     *     OPConfig.getInstance(context).setOfflineMode(OfflineModeImplementation);
-     * </pre>
-     * }
-     *
-     * Your settings will be globally available to all OursPrivacy instances, and will be used across
-     * all the library. The call is thread safe, but should be done before
-     * your first call to OursPrivacyAPI.getInstance to insure that the library never uses it's
-     * default.
-     *
-     * The given {@link OfflineMode} may be used from multiple threads, you should ensure that
-     * your implementation is thread-safe before passing it to OursPrivacy.
-     *
-     * @param offlineMode client offline implementation to use on OursPrivacy
-     */
-    public synchronized void setOfflineMode(OfflineMode offlineMode) {
-        mOfflineMode = offlineMode;
-    }
-
-    /* package */ OPConfig(Bundle metaData, Context context, String instanceName) {
-
-        // By default, we use a clean, FACTORY default SSLSocket. In general this is the right
-        // thing to do, and some other third party libraries change the
+    OPConfig(Bundle metaData, Context context) {
         SSLSocketFactory foundSSLFactory;
         try {
             final SSLContext sslContext = SSLContext.getInstance("TLS");
             sslContext.init(null, null, null);
             foundSSLFactory = sslContext.getSocketFactory();
         } catch (final GeneralSecurityException e) {
-            OPLog.i("OursPrivacyAPI.Conf", "System has no SSL support. Built-in events editor will not be available", e);
+            OPLog.i(LOGTAG, "System has no SSL support.", e);
             foundSSLFactory = null;
         }
         mSSLSocketFactory = foundSSLFactory;
-        mInstanceName = instanceName;
+
         DEBUG = metaData.getBoolean("com.oursprivacy.android.Config.EnableDebugLogging", false);
         if (DEBUG) {
             OPLog.setLevel(OPLog.VERBOSE);
         }
 
-        if (metaData.containsKey("com.oursprivacy.android.Config.DebugFlushInterval")) {
-            OPLog.w(LOGTAG, "We do not support com.oursprivacy.android.Config.DebugFlushInterval anymore. There will only be one flush interval. Please, update your AndroidManifest.xml.");
-        }
-
-        mBulkUploadLimit = metaData.getInt("com.oursprivacy.android.Config.BulkUploadLimit", 40); // 40 records default
-        mFlushInterval = metaData.getInt("com.oursprivacy.android.Config.FlushInterval", 60 * 1000); // one minute default
-        mFlushBatchSize = metaData.getInt("com.oursprivacy.android.Config.FlushBatchSize", 50); // flush 50 events at a time by default
-        shouldGzipRequestPayload = metaData.getBoolean("com.oursprivacy.android.Config.GzipRequestPayload", false);
+        mBulkUploadLimit = metaData.getInt("com.oursprivacy.android.Config.BulkUploadLimit", 40);
+        mFlushInterval = metaData.getInt("com.oursprivacy.android.Config.FlushInterval", 10 * 1000);
+        mFlushBatchSize = clampBatchSize(metaData.getInt("com.oursprivacy.android.Config.FlushBatchSize", 50));
+        mShouldGzipRequestPayload = metaData.getBoolean("com.oursprivacy.android.Config.GzipRequestPayload", false);
         mFlushOnBackground = metaData.getBoolean("com.oursprivacy.android.Config.FlushOnBackground", true);
-        mMinimumDatabaseLimit = metaData.getInt("com.oursprivacy.android.Config.MinimumDatabaseLimit", 20 * 1024 * 1024); // 20 Mb
-        mMaximumDatabaseLimit = metaData.getInt("com.oursprivacy.android.Config.MaximumDatabaseLimit", Integer.MAX_VALUE); // 2 Gb
-        mResourcePackageName = metaData.getString("com.oursprivacy.android.Config.ResourcePackageName"); // default is null
         mDisableAppOpenEvent = metaData.getBoolean("com.oursprivacy.android.Config.DisableAppOpenEvent", true);
         mDisableExceptionHandler = metaData.getBoolean("com.oursprivacy.android.Config.DisableExceptionHandler", false);
-        mMinSessionDuration = metaData.getInt("com.oursprivacy.android.Config.MinimumSessionDuration", 10 * 1000); // 10 seconds
-        mSessionTimeoutDuration = metaData.getInt("com.oursprivacy.android.Config.SessionTimeoutDuration", Integer.MAX_VALUE); // no timeout by default
-        mUseIpAddressForGeolocation = metaData.getBoolean("com.oursprivacy.android.Config.UseIpAddressForGeolocation", true);
-        mRemoveLegacyResidualFiles = metaData.getBoolean("com.oursprivacy.android.Config.RemoveLegacyResidualFiles", false);
+        mMinSessionDuration = metaData.getInt("com.oursprivacy.android.Config.MinimumSessionDuration", 10 * 1000);
+        mSessionTimeoutDuration = metaData.getInt("com.oursprivacy.android.Config.SessionTimeoutDuration", Integer.MAX_VALUE);
 
-        Object dataExpirationMetaData = metaData.get("com.oursprivacy.android.Config.DataExpiration");
-        long dataExpirationLong = 1000 * 60 * 60 * 24 * 5; // 5 days default
-        if (dataExpirationMetaData != null) {
-            try {
-                if (dataExpirationMetaData instanceof Integer) {
-                    dataExpirationLong = (long) (int) dataExpirationMetaData;
-                } else if (dataExpirationMetaData instanceof Float) {
-                    dataExpirationLong = (long) (float) dataExpirationMetaData;
-                } else {
-                    throw new NumberFormatException(dataExpirationMetaData.toString() + " is not a number.");
-                }
-            } catch (Exception e) {
-                OPLog.e(LOGTAG,"Error parsing com.oursprivacy.android.Config.DataExpiration meta-data value", e);
-            }
-        }
-        mDataExpiration = dataExpirationLong;
-        boolean noUseIpAddressForGeolocationSetting = !metaData.containsKey("com.oursprivacy.android.Config.UseIpAddressForGeolocation");
-
-        String eventsEndpoint = metaData.getString("com.oursprivacy.android.Config.EventsEndpoint");
-        if (eventsEndpoint != null) {
-            setEventsEndpoint(noUseIpAddressForGeolocationSetting ? eventsEndpoint : getEndPointWithIpTrackingParam(eventsEndpoint, getUseIpAddressForGeolocation()));
-        } else {
-            setEventsEndpointWithBaseURL(OPConstants.URL.OURSPRIVACY_API);
-        }
+        mServerURL = OPConstants.URL.OURSPRIVACY_API;
+        mEventsEndpoint = mServerURL + OPConstants.URL.EVENT;
 
         OPLog.v(LOGTAG, toString());
     }
 
-    // Max size of queue before we require a flush. Must be below the limit the service will accept.
-    public int getBulkUploadLimit() {
-        return mBulkUploadLimit;
+    public synchronized void setSSLSocketFactory(SSLSocketFactory factory) {
+        mSSLSocketFactory = factory;
     }
 
-    // Target max milliseconds between flushes. This is advisory.
-    public int getFlushInterval() {
-        return mFlushInterval;
+    public synchronized void setOfflineMode(OfflineMode offlineMode) {
+        mOfflineMode = offlineMode;
     }
 
-    // Whether the SDK should flush() queues when the app goes into the background or not.
-    public boolean getFlushOnBackground() {
-        return mFlushOnBackground;
+    public int getBulkUploadLimit() { return mBulkUploadLimit; }
+    public int getFlushInterval() { return mFlushInterval; }
+    public boolean getFlushOnBackground() { return mFlushOnBackground; }
+    public int getFlushBatchSize() { return mFlushBatchSize; }
+    public boolean shouldGzipRequestPayload() { return mShouldGzipRequestPayload; }
+
+    public void setFlushBatchSize(int batchSize) {
+        mFlushBatchSize = clampBatchSize(batchSize);
     }
 
-    // Maximum number of events/updates to send in a single network request
-    public int getFlushBatchSize() {
-        return mFlushBatchSize;
+    public void setFlushOnBackground(boolean flushOnBackground) {
+        mFlushOnBackground = flushOnBackground;
     }
 
+    public boolean getDisableAppOpenEvent() { return mDisableAppOpenEvent; }
+    public boolean getDisableExceptionHandler() { return mDisableExceptionHandler; }
+    public int getMinimumSessionDuration() { return mMinSessionDuration; }
+    public int getSessionTimeoutDuration() { return mSessionTimeoutDuration; }
 
-    public void setFlushBatchSize(int flushBatchSize) {
-        mFlushBatchSize = flushBatchSize;
-    }
-    public boolean shouldGzipRequestPayload() { return shouldGzipRequestPayload; }
-
-    // Throw away records that are older than this in milliseconds. Should be below the server side age limit for events.
-    public long getDataExpiration() {
-        return mDataExpiration;
-    }
-
-    public int getMinimumDatabaseLimit() { return mMinimumDatabaseLimit; }
-
-    public int getMaximumDatabaseLimit() { return mMaximumDatabaseLimit; }
-
-    public String getInstanceName() { return mInstanceName; }
-
-    public boolean getDisableAppOpenEvent() {
-        return mDisableAppOpenEvent;
-    }
-
-    // Preferred URL for tracking events
-    public String getEventsEndpoint() {
-        return mEventsEndpoint;
-    }
-
-    public String getIdentifyEndpoint() { return getEventsEndpoint(); }
-
-    public boolean getTrackAutomaticEvents() { return mTrackAutomaticEvents; }
-
-    public void setServerURL(String serverURL, ProxyServerInteractor interactor) {
-        setServerURL(serverURL);
-        setProxyServerInteractor(interactor);
-    }
+    public String getServerURL() { return mServerURL; }
+    public String getEventsEndpoint() { return mEventsEndpoint; }
 
     public void setServerURL(String serverURL) {
-        setEventsEndpointWithBaseURL(serverURL);
+        if (serverURL == null || serverURL.isEmpty()) return;
+        mServerURL = stripTrailingSlash(serverURL);
+        mEventsEndpoint = mServerURL + OPConstants.URL.EVENT;
     }
 
-    private String getEndPointWithIpTrackingParam(String endPoint, boolean ifUseIpAddressForGeolocation) {
-        if (endPoint.contains("?ip=")) {
-            return endPoint.substring(0, endPoint.indexOf("?ip=")) + "?ip=" + (ifUseIpAddressForGeolocation ? "1" : "0");
-        } else {
-            return endPoint + "?ip=" + (ifUseIpAddressForGeolocation ? "1" : "0");
-        }
+    public void setServerURL(String serverURL, ProxyServerInteractor callback) {
+        setServerURL(serverURL);
+        setProxyServerInteractor(callback);
     }
 
-    private void setEventsEndpointWithBaseURL(String baseURL) {
-        setEventsEndpoint(getEndPointWithIpTrackingParam(baseURL + OPConstants.URL.EVENT, getUseIpAddressForGeolocation()));
+    public synchronized SSLSocketFactory getSSLSocketFactory() { return mSSLSocketFactory; }
+
+    public synchronized OfflineMode getOfflineMode() { return mOfflineMode; }
+
+    public ProxyServerInteractor getProxyServerInteractor() { return mProxyServerInteractor; }
+
+    public void setProxyServerInteractor(ProxyServerInteractor interactor) {
+        mProxyServerInteractor = interactor;
     }
 
-    private void setEventsEndpoint(String eventsEndpoint) {
-        mEventsEndpoint = eventsEndpoint;
-    }
-
-    public int getMinimumSessionDuration() {
-        return mMinSessionDuration;
-    }
-
-    public int getSessionTimeoutDuration() {
-        return mSessionTimeoutDuration;
-    }
-
-    public boolean getDisableExceptionHandler() {
-        return mDisableExceptionHandler;
-    }
-
-    private boolean getUseIpAddressForGeolocation() {
-        return mUseIpAddressForGeolocation;
-    }
-
-    public boolean getRemoveLegacyResidualFiles() { return mRemoveLegacyResidualFiles; }
-
-    public void setEnableLogging(boolean enableLogging) {
-        DEBUG = enableLogging;
+    public void setLoggingEnabled(boolean enabled) {
+        DEBUG = enabled;
         OPLog.setLevel(DEBUG ? OPLog.VERBOSE : OPLog.NONE);
     }
 
-    public void setTrackAutomaticEvents(boolean trackAutomaticEvents) {
-        mTrackAutomaticEvents = trackAutomaticEvents;
-    }
-    // Pre-configured package name for resources, if they differ from the application package name
-    //
-    // mContext.getPackageName() actually returns the "application id", which
-    // usually (but not always) the same as package of the generated R class.
-    //
-    //  See: http://tools.android.com/tech-docs/new-build-system/applicationid-vs-packagename
-    //
-    // As far as I can tell, the original package name is lost in the build
-    // process in these cases, and must be specified by the developer using
-    // OPConfig meta-data.
-    public String getResourcePackageName() {
-        return mResourcePackageName;
-    }
-
-    // This method is thread safe, and assumes that SSLSocketFactory is also thread safe
-    // (At this writing, all HttpsURLConnections in the framework share a single factory,
-    // so this is pretty safe even if the docs are ambiguous)
-    public synchronized SSLSocketFactory getSSLSocketFactory() {
-        return mSSLSocketFactory;
-    }
-
-    // This method is thread safe, and assumes that OfflineMode is also thread safe
-    public synchronized OfflineMode getOfflineMode() {
-        return mOfflineMode;
-    }
-
-    ///////////////////////////////////////////////
-
-    public ProxyServerInteractor getProxyServerInteractor() {
-        return this.serverCallbacks;
-    }
-
-    public void setProxyServerInteractor(ProxyServerInteractor interactor) {
-        this.serverCallbacks = interactor;
-    }
-
-    // Package access for testing only- do not call directly in library code
-    /* package */ static OPConfig readConfig(Context appContext, String instanceName) {
+    static OPConfig readConfig(Context appContext) {
         final String packageName = appContext.getPackageName();
         try {
-            final ApplicationInfo appInfo = appContext.getPackageManager().getApplicationInfo(packageName, PackageManager.GET_META_DATA);
+            final ApplicationInfo appInfo = appContext.getPackageManager()
+                    .getApplicationInfo(packageName, PackageManager.GET_META_DATA);
             Bundle configBundle = appInfo.metaData;
-            if (null == configBundle) {
+            if (configBundle == null) {
                 configBundle = new Bundle();
             }
-            return new OPConfig(configBundle, appContext, instanceName);
+            return new OPConfig(configBundle, appContext);
         } catch (final NameNotFoundException e) {
             throw new RuntimeException("Can't configure OursPrivacy with package name " + packageName, e);
         }
     }
 
+    private static int clampBatchSize(int batchSize) {
+        if (batchSize < 1) return 1;
+        if (batchSize > 50) return 50;
+        return batchSize;
+    }
+
+    private static String stripTrailingSlash(String s) {
+        if (s == null) return null;
+        while (s.endsWith("/")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s;
+    }
+
     @Override
     public String toString() {
-        return "OursPrivacy (" + VERSION + ") configured with:\n" +
-                "    TrackAutomaticEvents: " + getTrackAutomaticEvents() + "\n" +
-                "    BulkUploadLimit " + getBulkUploadLimit() + "\n" +
-                "    FlushInterval " + getFlushInterval() + "\n" +
-                "    FlushInterval " + getFlushBatchSize() + "\n" +
-                "    DataExpiration " + getDataExpiration() + "\n" +
-                "    MinimumDatabaseLimit " + getMinimumDatabaseLimit() + "\n" +
-                "    MaximumDatabaseLimit " + getMaximumDatabaseLimit() + "\n" +
-                "    DisableAppOpenEvent " + getDisableAppOpenEvent() + "\n" +
-                "    EnableDebugLogging " + DEBUG + "\n" +
-                "    EventsEndpoint " + getEventsEndpoint() + "\n" +
-                "    MinimumSessionDuration: " + getMinimumSessionDuration() + "\n" +
-                "    SessionTimeoutDuration: " + getSessionTimeoutDuration() + "\n" +
-                "    DisableExceptionHandler: " + getDisableExceptionHandler() + "\n" +
-                "    FlushOnBackground: " + getFlushOnBackground();
+        return "OursPrivacy (" + VERSION + ") configured with:\n"
+                + "    BulkUploadLimit " + getBulkUploadLimit() + "\n"
+                + "    FlushInterval " + getFlushInterval() + "\n"
+                + "    FlushBatchSize " + getFlushBatchSize() + "\n"
+                + "    EnableDebugLogging " + DEBUG + "\n"
+                + "    EventsEndpoint " + getEventsEndpoint() + "\n"
+                + "    MinimumSessionDuration: " + getMinimumSessionDuration() + "\n"
+                + "    SessionTimeoutDuration: " + getSessionTimeoutDuration() + "\n"
+                + "    DisableExceptionHandler: " + getDisableExceptionHandler() + "\n"
+                + "    FlushOnBackground: " + getFlushOnBackground();
     }
 
     private final int mBulkUploadLimit;
     private final int mFlushInterval;
-    private final boolean mFlushOnBackground;
-    private final long mDataExpiration;
-    private final int mMinimumDatabaseLimit;
-    private final int mMaximumDatabaseLimit;
-    private String mInstanceName;
+    private boolean mFlushOnBackground;
     private final boolean mDisableAppOpenEvent;
     private final boolean mDisableExceptionHandler;
-    private boolean mTrackAutomaticEvents = true;
-    private String mEventsEndpoint;
-    private int mFlushBatchSize;
-    private boolean shouldGzipRequestPayload;
-
-    private final String mResourcePackageName;
     private final int mMinSessionDuration;
     private final int mSessionTimeoutDuration;
-    private boolean mUseIpAddressForGeolocation;
-    private final boolean mRemoveLegacyResidualFiles;
+    private final boolean mShouldGzipRequestPayload;
 
-    // Mutable, with synchronized accessor and mutator
+    private int mFlushBatchSize;
+    private String mServerURL;
+    private String mEventsEndpoint;
+
     private SSLSocketFactory mSSLSocketFactory;
     private OfflineMode mOfflineMode;
-    private ProxyServerInteractor serverCallbacks = null;
-    private static final String LOGTAG = "OursPrivacyAPI.Conf";
+    private ProxyServerInteractor mProxyServerInteractor;
+
+    private static final String LOGTAG = "OursPrivacy.Config";
 }

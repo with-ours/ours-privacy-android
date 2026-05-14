@@ -23,6 +23,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI
+import com.oursprivacy.android.opmetrics.OursPrivacyInitOptions
+import com.oursprivacy.android.opmetrics.OursPrivacyUserProperties
 import org.json.JSONObject
 
 @Composable
@@ -30,20 +32,44 @@ fun TrackingPage(navController: NavHostController) {
     val showDialog = remember { mutableStateOf(false) }
     val dialogMessage = remember { mutableStateOf("") }
     val context = LocalContext.current
-    val oursprivacy = OursPrivacyAPI.getInstance(context, OURSPRIVACY_PROJECT_TOKEN, true)
-    oursprivacy.setServerURL("https://dev-api.oursprivacy.com/api/v1")
+    val op = remember {
+        OursPrivacyAPI(context.applicationContext).also {
+            it.initialize(
+                OURSPRIVACY_PROJECT_TOKEN,
+                OursPrivacyInitOptions.builder().trackAutomaticEvents(true).build()
+            )
+        }
+    }
 
     val trackingActions = listOf(
-        Triple("Track Green", "Event: \"Track Event with Properties!\"", {
-            println("Tracking with properties")
-            val properties = JSONObject(mapOf("testInt" to 1))
-            oursprivacy.track("Green",  properties)
-            oursprivacy.flush()
+        Triple("Track event", "Tracks 'demo_event' with one event property.", {
+            op.track("demo_event", JSONObject(mapOf("source" to "demo")))
+            op.flush()
         }),
-        Triple("Identify", "Event: \"Identify\"", {
-            println("Identify")
-            oursprivacy.identify(oursprivacy.distinctId, null)
-            oursprivacy.flush()
+        Triple("Identify", "Identifies via externalId + email.", {
+            op.identify(
+                OursPrivacyUserProperties.builder()
+                    .externalId("demo_user_1")
+                    .email("demo@example.com")
+                    .build()
+            )
+            op.flush()
+        }),
+        Triple("Track + per-call user props", "track('view_item') with phone_number on userProperties.", {
+            op.track(
+                "view_item",
+                JSONObject(mapOf("sku" to "ABC-001")),
+                OursPrivacyUserProperties.builder()
+                    .phoneNumber("+1-555-0100")
+                    .build()
+            )
+            op.flush()
+        }),
+        Triple("Deep link", "Parses UTMs and click IDs from a sample URL.", {
+            op.trackDeepLink(
+                "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
+            )
+            op.flush()
         })
     )
 

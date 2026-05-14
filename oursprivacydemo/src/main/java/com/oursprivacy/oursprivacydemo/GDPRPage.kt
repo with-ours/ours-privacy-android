@@ -24,7 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI
-import org.json.JSONObject
+import com.oursprivacy.android.opmetrics.OursPrivacyInitOptions
 
 
 @Composable
@@ -32,35 +32,24 @@ fun GDPRPage(navController: NavHostController) {
     val showDialog = remember { mutableStateOf(false) }
     val dialogMessage = remember { mutableStateOf("") }
     val context = LocalContext.current
-    val oursprivacy = OursPrivacyAPI.getInstance(context, OURSPRIVACY_PROJECT_TOKEN, true)
+    val op = remember {
+        OursPrivacyAPI(context.applicationContext).also {
+            it.initialize(
+                OURSPRIVACY_PROJECT_TOKEN,
+                OursPrivacyInitOptions.builder().trackAutomaticEvents(true).build()
+            )
+        }
+    }
 
     val gdprActions = listOf(
-        Triple("Opt Out", "Event: \"Opt Out!\"", {
-            println("Opting out")
-            oursprivacy.optOutTracking()
+        Triple("Opt Out", "Clears queued events; suppresses future tracks.", {
+            op.optOutTracking()
         }),
-        Triple("Opt In", "Event: \"Opt In!\"", {
-            println("Opting in")
-            oursprivacy.optInTracking()
+        Triple("Opt In", "Resumes tracking and fires \$opt_in.", {
+            op.optInTracking()
         }),
-        Triple("Opt In w DistinctId", "Event: \"Opt In w DistinctId!\"", {
-            println("Opting in with Distinct ID")
-            oursprivacy.optInTracking("distinct_id")
-        }),
-        Triple("Opt In w DistinctId and Properties", "Event: \"Opt In w DistinctId and Properties!\"", {
-            println("Opting in with Distinct ID and Properties")
-            val properties = JSONObject(mapOf("property" to "value"))
-            oursprivacy.optInTracking("distinct_id", properties)
-        }),
-        Triple("Init with default opt-out", "Event: \"Init with default opt-out!\"", {
-            println("Initializing with default opt-out")
-            oursprivacy.optOutTracking()
-            // Additional initialization logic if required
-        }),
-        Triple("Init with default opt-in", "Event: \"Init with default opt-in!\"", {
-            println("Initializing with default opt-in")
-            oursprivacy.optInTracking()
-            // Additional initialization logic if required
+        Triple("Has opted out?", "Logs the persisted opt-out state.", {
+            println("hasOptedOutTracking = ${op.hasOptedOutTracking()}")
         })
     )
 

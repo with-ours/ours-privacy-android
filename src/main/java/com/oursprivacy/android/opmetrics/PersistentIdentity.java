@@ -1,690 +1,357 @@
 package com.oursprivacy.android.opmetrics;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
+import android.annotation.SuppressLint;
+import android.content.SharedPreferences;
+
+import com.oursprivacy.android.util.OPLog;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
-import android.annotation.SuppressLint;
-import android.content.Context;
-import android.content.SharedPreferences;
-import android.os.Looper;
-
-import com.oursprivacy.android.util.OPLog;
-
-// In order to use writeEdits, we have to suppress the linter's check for commit()/apply()
+/**
+ * Single source of truth for persisted SDK state:
+ * <ul>
+ *   <li>{@code visitor_id} (UUID per install) + {@code is_manually_set_id} flag
+ *   <li>opt-out flag
+ *   <li>The four default-property bags: event, user-custom, user-consent, attribution
+ *   <li>In-memory event queue, snapshotted to a single SharedPreferences JSON blob on each mutation
+ * </ul>
+ */
 @SuppressLint("CommitPrefEdits")
-        /* package */ class PersistentIdentity {
-    // Should ONLY be called from an OnPrefsLoadedListener (since it should NEVER be called concurrently)
-    public static String getPeopleDistinctId(SharedPreferences storedPreferences) {
-        return storedPreferences.getString("people_distinct_id", null);
+/* package */ final class PersistentIdentity {
+
+    private static final String KEY_VISITOR_ID = "visitor_id";
+    private static final String KEY_IS_MANUALLY_SET_ID = "is_manually_set_id";
+    private static final String KEY_OPT_OUT = "opt_out";
+    private static final String KEY_DEFAULT_EVENT_PROPERTIES = "default_event_properties";
+    private static final String KEY_DEFAULT_USER_CUSTOM_PROPERTIES = "default_user_custom_properties";
+    private static final String KEY_DEFAULT_USER_CONSENT_PROPERTIES = "default_user_consent_properties";
+    private static final String KEY_ATTRIBUTION_DEFAULT_PROPERTIES = "attribution_default_properties";
+    private static final String KEY_EVENT_QUEUE = "event_queue";
+
+    private final Future<SharedPreferences> mPrefsLoader;
+
+    private boolean mLoaded = false;
+    private String mVisitorId;
+    private boolean mIsManuallySetId;
+    private Boolean mOptOut;
+
+    private JSONObject mDefaultEventProperties = new JSONObject();
+    private JSONObject mDefaultUserCustomProperties = new JSONObject();
+    private JSONObject mDefaultUserConsentProperties = new JSONObject();
+    private JSONObject mAttributionDefaultProperties = new JSONObject();
+
+    private JSONArray mEventQueue = new JSONArray();
+
+    PersistentIdentity(Future<SharedPreferences> prefsLoader) {
+        mPrefsLoader = prefsLoader;
     }
 
-    public static void writeReferrerPrefs(Context context, String preferencesName, Map<String, String> properties) {
-        synchronized (sReferrerPrefsLock) {
-            final SharedPreferences referralInfo = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE);
-            final SharedPreferences.Editor editor = referralInfo.edit();
-            editor.clear();
-            for (final Map.Entry<String, String> entry : properties.entrySet()) {
-                editor.putString(entry.getKey(), entry.getValue());
+    // ---------- visitor_id ----------
+
+    synchronized String getVisitorId() {
+        ensureLoaded();
+        return mVisitorId;
+    }
+
+    synchronized void setVisitorId(String visitorId, boolean manuallySet) {
+        ensureLoaded();
+        mVisitorId = visitorId;
+        mIsManuallySetId = manuallySet;
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putString(KEY_VISITOR_ID, mVisitorId);
+            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, mIsManuallySetId);
+            editor.apply();
+        }
+    }
+
+    synchronized boolean isManuallySetId() {
+        ensureLoaded();
+        return mIsManuallySetId;
+    }
+
+    // ---------- opt-out ----------
+
+    synchronized boolean getOptOut() {
+        ensureLoaded();
+        return mOptOut != null && mOptOut;
+    }
+
+    synchronized boolean hasOptOutFlag() {
+        ensureLoaded();
+        return mOptOut != null;
+    }
+
+    synchronized void setOptOut(boolean optOut) {
+        ensureLoaded();
+        mOptOut = optOut;
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putBoolean(KEY_OPT_OUT, optOut);
+            editor.apply();
+        }
+    }
+
+    // ---------- default-property bags ----------
+
+    synchronized JSONObject getDefaultEventProperties() {
+        ensureLoaded();
+        return copy(mDefaultEventProperties);
+    }
+
+    synchronized JSONObject getDefaultUserCustomProperties() {
+        ensureLoaded();
+        return copy(mDefaultUserCustomProperties);
+    }
+
+    synchronized JSONObject getDefaultUserConsentProperties() {
+        ensureLoaded();
+        return copy(mDefaultUserConsentProperties);
+    }
+
+    synchronized JSONObject getAttributionDefaultProperties() {
+        ensureLoaded();
+        return copy(mAttributionDefaultProperties);
+    }
+
+    synchronized void updateDefaultEventProperties(JSONObject merge) {
+        ensureLoaded();
+        mergeOnto(mDefaultEventProperties, merge);
+        persist(KEY_DEFAULT_EVENT_PROPERTIES, mDefaultEventProperties);
+    }
+
+    synchronized void updateDefaultUserCustomProperties(JSONObject merge) {
+        ensureLoaded();
+        mergeOnto(mDefaultUserCustomProperties, merge);
+        persist(KEY_DEFAULT_USER_CUSTOM_PROPERTIES, mDefaultUserCustomProperties);
+    }
+
+    synchronized void updateDefaultUserConsentProperties(JSONObject merge) {
+        ensureLoaded();
+        mergeOnto(mDefaultUserConsentProperties, merge);
+        persist(KEY_DEFAULT_USER_CONSENT_PROPERTIES, mDefaultUserConsentProperties);
+    }
+
+    /** Deep-link attribution replaces (not merges) prior attribution defaults. */
+    synchronized void replaceAttributionDefaultProperties(JSONObject replacement) {
+        ensureLoaded();
+        mAttributionDefaultProperties = replacement == null ? new JSONObject() : replacement;
+        persist(KEY_ATTRIBUTION_DEFAULT_PROPERTIES, mAttributionDefaultProperties);
+    }
+
+    // ---------- event queue ----------
+
+    synchronized void enqueueEvent(JSONObject event) {
+        ensureLoaded();
+        mEventQueue.put(event);
+        persistQueue();
+    }
+
+    /** Returns a snapshot of the current queue. The persisted copy is not mutated. */
+    synchronized JSONArray getQueueSnapshot() {
+        ensureLoaded();
+        return copyArray(mEventQueue);
+    }
+
+    /** Drops the first {@code count} items from the queue (used post-flush). */
+    synchronized void dropFromQueue(int count) {
+        ensureLoaded();
+        if (count <= 0) return;
+        if (count >= mEventQueue.length()) {
+            mEventQueue = new JSONArray();
+        } else {
+            final JSONArray next = new JSONArray();
+            for (int i = count; i < mEventQueue.length(); i++) {
+                next.put(mEventQueue.opt(i));
             }
-            writeEdits(editor);
-            sReferrerPrefsDirty = true;
+            mEventQueue = next;
+        }
+        persistQueue();
+    }
+
+    synchronized int getQueueSize() {
+        ensureLoaded();
+        return mEventQueue.length();
+    }
+
+    synchronized void clearQueue() {
+        ensureLoaded();
+        mEventQueue = new JSONArray();
+        persistQueue();
+    }
+
+    // ---------- lifecycle ----------
+
+    /** Wipes everything except the opt-out flag; regenerates a fresh visitor_id. */
+    synchronized void reset() {
+        ensureLoaded();
+        mVisitorId = UUID.randomUUID().toString();
+        mIsManuallySetId = false;
+        mDefaultEventProperties = new JSONObject();
+        mDefaultUserCustomProperties = new JSONObject();
+        mDefaultUserConsentProperties = new JSONObject();
+        mAttributionDefaultProperties = new JSONObject();
+        mEventQueue = new JSONArray();
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putString(KEY_VISITOR_ID, mVisitorId);
+            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+            editor.remove(KEY_EVENT_QUEUE);
+            editor.apply();
         }
     }
 
-    public PersistentIdentity(Future<SharedPreferences> referrerPreferences, Future<SharedPreferences> storedPreferences, Future<SharedPreferences> timeEventsPreferences, Future<SharedPreferences> oursprivacyPreferences) {
-        mLoadReferrerPreferences = referrerPreferences;
-        mLoadStoredPreferences = storedPreferences;
-        mTimeEventsPreferences = timeEventsPreferences;
-        mOursPrivacyPreferences = oursprivacyPreferences;
-        mSuperPropertiesCache = null;
-        mReferrerPropertiesCache = null;
-        mIdentitiesLoaded = false;
-        mReferrerChangeListener = (sharedPreferences, key) -> {
-            synchronized (sReferrerPrefsLock) {
-                readReferrerProperties();
-                sReferrerPrefsDirty = false;
-            }
-        };
-
-        // Preload time events in the background to avoid main thread disk reads
-        preloadTimeEventsAsync();
-    }
-
-    // Super properties
-    public void addSuperPropertiesToObject(JSONObject ob) {
-        synchronized (mSuperPropsLock) {
-            final JSONObject superProperties = this.getSuperPropertiesCache();
-            final Iterator<?> superIter = superProperties.keys();
-            while (superIter.hasNext()) {
-                final String key = (String) superIter.next();
-
-                try {
-                    ob.put(key, superProperties.get(key));
-                } catch (JSONException e) {
-                    OPLog.e(LOGTAG, "Object read from one JSON Object cannot be written to another", e);
-                }
-            }
+    /**
+     * Opt-out path: rotates {@code visitor_id}, clears the four default bags,
+     * empties the event queue, and persists the opt-out flag. The visitor is
+     * effectively forgotten on the next event lifecycle.
+     */
+    synchronized void optOutAndClear() {
+        ensureLoaded();
+        mVisitorId = UUID.randomUUID().toString();
+        mIsManuallySetId = false;
+        mDefaultEventProperties = new JSONObject();
+        mDefaultUserCustomProperties = new JSONObject();
+        mDefaultUserConsentProperties = new JSONObject();
+        mAttributionDefaultProperties = new JSONObject();
+        mEventQueue = new JSONArray();
+        mOptOut = true;
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putString(KEY_VISITOR_ID, mVisitorId);
+            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+            editor.remove(KEY_EVENT_QUEUE);
+            editor.putBoolean(KEY_OPT_OUT, true);
+            editor.apply();
         }
     }
 
-    public void updateSuperProperties(SuperPropertyUpdate updates) {
-        synchronized (mSuperPropsLock) {
-            final JSONObject oldPropCache = getSuperPropertiesCache();
-            final JSONObject copy = new JSONObject();
+    // ---------- internals ----------
 
-            try {
-                final Iterator<String> keys = oldPropCache.keys();
-                while (keys.hasNext()) {
-                    final String k = keys.next();
-                    final Object v = oldPropCache.get(k);
-                    copy.put(k, v);
-                }
-            } catch (JSONException e) {
-                OPLog.e(LOGTAG, "Can't copy from one JSONObject to another", e);
-                return;
-            }
-
-            final JSONObject replacementCache = updates.update(copy);
-            if (replacementCache == null) {
-                OPLog.w(LOGTAG, "An update to OursPrivacy's super properties returned null, and will have no effect.");
-                return;
-            }
-
-            mSuperPropertiesCache = replacementCache;
-            storeSuperProperties();
+    private void ensureLoaded() {
+        if (mLoaded) return;
+        SharedPreferences prefs = null;
+        try {
+            prefs = mPrefsLoader.get();
+        } catch (ExecutionException e) {
+            OPLog.e(LOGTAG, "Failed to load SharedPreferences", e.getCause());
+        } catch (InterruptedException e) {
+            OPLog.e(LOGTAG, "Interrupted loading SharedPreferences", e);
         }
+        if (prefs == null) {
+            mLoaded = true;
+            mVisitorId = UUID.randomUUID().toString();
+            return;
+        }
+
+        mVisitorId = prefs.getString(KEY_VISITOR_ID, null);
+        mIsManuallySetId = prefs.getBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        if (prefs.contains(KEY_OPT_OUT)) {
+            mOptOut = prefs.getBoolean(KEY_OPT_OUT, false);
+        }
+        mDefaultEventProperties = readJsonObject(prefs, KEY_DEFAULT_EVENT_PROPERTIES);
+        mDefaultUserCustomProperties = readJsonObject(prefs, KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        mDefaultUserConsentProperties = readJsonObject(prefs, KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        mAttributionDefaultProperties = readJsonObject(prefs, KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        mEventQueue = readJsonArray(prefs, KEY_EVENT_QUEUE);
+
+        if (mVisitorId == null) {
+            mVisitorId = UUID.randomUUID().toString();
+            final SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(KEY_VISITOR_ID, mVisitorId);
+            editor.apply();
+        }
+
+        mLoaded = true;
     }
 
-    public void registerSuperProperties(JSONObject superProperties) {
-        synchronized (mSuperPropsLock) {
-            final JSONObject propCache = getSuperPropertiesCache();
-
-            for (final Iterator<?> iter = superProperties.keys(); iter.hasNext(); ) {
-                final String key = (String) iter.next();
-                try {
-                    propCache.put(key, superProperties.get(key));
-                } catch (final JSONException e) {
-                    OPLog.e(LOGTAG, "Exception registering super property.", e);
-                }
-            }
-
-            storeSuperProperties();
-        }
-    }
-
-    public void unregisterSuperProperty(String superPropertyName) {
-        synchronized (mSuperPropsLock) {
-            final JSONObject propCache = getSuperPropertiesCache();
-            propCache.remove(superPropertyName);
-
-            storeSuperProperties();
-        }
-    }
-
-    public void registerSuperPropertiesOnce(JSONObject superProperties) {
-        synchronized (mSuperPropsLock) {
-            final JSONObject propCache = getSuperPropertiesCache();
-
-            for (final Iterator<?> iter = superProperties.keys(); iter.hasNext(); ) {
-                final String key = (String) iter.next();
-                if (! propCache.has(key)) {
-                    try {
-                        propCache.put(key, superProperties.get(key));
-                    } catch (final JSONException e) {
-                        OPLog.e(LOGTAG, "Exception registering super property.", e);
-                    }
-                }
-            }// for
-
-            storeSuperProperties();
-        }
-    }
-
-    public void clearSuperProperties() {
-        synchronized (mSuperPropsLock) {
-            mSuperPropertiesCache = new JSONObject();
-            storeSuperProperties();
-        }
-    }
-
-    public Map<String, String> getReferrerProperties() {
-        synchronized (sReferrerPrefsLock) {
-            if (sReferrerPrefsDirty || null == mReferrerPropertiesCache) {
-                readReferrerProperties();
-                sReferrerPrefsDirty = false;
-            }
-        }
-        return mReferrerPropertiesCache;
-    }
-
-    public void clearReferrerProperties() {
-        synchronized (sReferrerPrefsLock) {
-            try {
-                final SharedPreferences referrerPrefs = mLoadReferrerPreferences.get();
-                final SharedPreferences.Editor prefsEdit = referrerPrefs.edit();
-                prefsEdit.clear();
-                writeEdits(prefsEdit);
-            } catch (final ExecutionException e) {
-                OPLog.e(LOGTAG, "Cannot load referrer properties from shared preferences.", e.getCause());
-            } catch (final InterruptedException e) {
-                OPLog.e(LOGTAG, "Cannot load referrer properties from shared preferences.", e);
-            }
-        }
-    }
-
-    public synchronized String getAnonymousId() {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        return mAnonymousId;
-    }
-
-    public synchronized boolean getHadPersistedDistinctId() {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        return mHadPersistedDistinctId;
-    }
-
-    public synchronized String getEventsDistinctId() {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        return mEventsDistinctId;
-    }
-
-    public synchronized String getEventsUserId() {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        if(mEventsUserIdPresent) {
-            return mEventsDistinctId;
+    private SharedPreferences.Editor editor() {
+        try {
+            return mPrefsLoader.get().edit();
+        } catch (ExecutionException e) {
+            OPLog.e(LOGTAG, "Can't get SharedPreferences editor", e.getCause());
+        } catch (InterruptedException e) {
+            OPLog.e(LOGTAG, "Interrupted getting editor", e);
         }
         return null;
     }
 
-    public synchronized void setAnonymousIdIfAbsent(String anonymousId) {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
+    private void persist(String key, JSONObject value) {
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putString(key, value.toString());
+            editor.apply();
         }
-        if (mAnonymousId != null) {
-            return;
-        }
-        mAnonymousId = anonymousId;
-        mHadPersistedDistinctId = true;
-        writeIdentities();
     }
 
-    public synchronized void setEventsDistinctId(String eventsDistinctId) {
-        if(!mIdentitiesLoaded) {
-            readIdentities();
+    private void persistQueue() {
+        final SharedPreferences.Editor editor = editor();
+        if (editor != null) {
+            editor.putString(KEY_EVENT_QUEUE, mEventQueue.toString());
+            editor.apply();
         }
-        mEventsDistinctId = eventsDistinctId;
-        writeIdentities();
     }
 
-    public synchronized void markEventsUserIdPresent() {
-        if(!mIdentitiesLoaded) {
-            readIdentities();
-        }
-        mEventsUserIdPresent = true;
-        writeIdentities();
-    }
-
-    public synchronized String getPeopleDistinctId() {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        return mPeopleDistinctId;
-    }
-
-    public synchronized void setPeopleDistinctId(String peopleDistinctId) {
-        if (! mIdentitiesLoaded) {
-            readIdentities();
-        }
-        mPeopleDistinctId = peopleDistinctId;
-        writeIdentities();
-    }
-
-    public synchronized void clearPreferences() {
-        // Will clear distinct_ids, superProperties,
-        // and waiting People Analytics properties. Will have no effect
-        // on messages already queued to send with AnalyticsMessages.
-
+    private static JSONObject readJsonObject(SharedPreferences prefs, String key) {
+        final String raw = prefs.getString(key, null);
+        if (raw == null) return new JSONObject();
         try {
-            final SharedPreferences prefs = mLoadStoredPreferences.get();
-            final SharedPreferences.Editor prefsEdit = prefs.edit();
-            prefsEdit.clear();
-            writeEdits(prefsEdit);
-            readSuperProperties();
-            readIdentities();
-        } catch (final ExecutionException | InterruptedException e) {
-            throw new RuntimeException(e.getCause());
+            return new JSONObject(raw);
+        } catch (JSONException e) {
+            OPLog.w(LOGTAG, "Stored " + key + " is not valid JSON; resetting", e);
+            return new JSONObject();
         }
     }
 
-    public void clearTimedEvents() {
+    private static JSONArray readJsonArray(SharedPreferences prefs, String key) {
+        final String raw = prefs.getString(key, null);
+        if (raw == null) return new JSONArray();
         try {
-            final SharedPreferences prefs = mTimeEventsPreferences.get();
-            final SharedPreferences.Editor editor = prefs.edit();
-            editor.clear();
-            writeEdits(editor);
-
-            // Clear cache if initialized
-            synchronized (mTimeEventsCacheLock) {
-                if (mTimeEventsCache != null) {
-                    mTimeEventsCache.clear();
-                }
-            }
-        } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Failed to clear time events", e);
-        } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Failed to clear time events", e.getCause());
+            return new JSONArray(raw);
+        } catch (JSONException e) {
+            OPLog.w(LOGTAG, "Stored " + key + " is not valid JSON; resetting", e);
+            return new JSONArray();
         }
     }
 
-    public Map<String, Long> getTimeEvents() {
-        // First check if cache is already loaded
-        synchronized (mTimeEventsCacheLock) {
-            if (mTimeEventsCache != null) {
-                return new HashMap<>(mTimeEventsCache);
-            }
-
-            // Detect if we're on the main thread
-            if (Looper.getMainLooper().getThread() == Thread.currentThread()) {
-                // Running on main thread - return empty map and load asynchronously
-                final Map<String, Long> emptyMap = new HashMap<>();
-
-                // Only start a new thread if we're not already loading
-                if (!mTimeEventsCacheLoading) {
-                    mTimeEventsCacheLoading = true;
-                    new Thread(this::loadTimeEventsCache).start();
-                }
-
-                return emptyMap;
-            } else {
-                // Not on main thread - safe to load synchronously
-                return loadTimeEventsCache();
-            }
-        }
-    }
-
-    // Helper method to load time events
-    private Map<String, Long> loadTimeEventsCache() {
-        synchronized (mTimeEventsCacheLock) {
-            if (mTimeEventsCache != null) {
-                return new HashMap<>(mTimeEventsCache);
-            }
-
-            mTimeEventsCache = new HashMap<>();
-
+    private static void mergeOnto(JSONObject target, JSONObject source) {
+        if (source == null) return;
+        final java.util.Iterator<String> keys = source.keys();
+        while (keys.hasNext()) {
+            final String k = keys.next();
             try {
-                final SharedPreferences prefs = mTimeEventsPreferences.get();
-                Map<String, ?> allEntries = prefs.getAll();
-                for (Map.Entry<String, ?> entry : allEntries.entrySet()) {
-                    mTimeEventsCache.put(entry.getKey(), Long.valueOf(entry.getValue().toString()));
-                }
-            } catch (InterruptedException e) {
-                OPLog.e(LOGTAG, "Failed to load time events", e);
-            } catch (ExecutionException e) {
-                OPLog.e(LOGTAG, "Failed to load time events", e.getCause());
-            } finally {
-                // Reset the loading flag when done
-                mTimeEventsCacheLoading = false;
-            }
-
-            return new HashMap<>(mTimeEventsCache);
+                target.put(k, source.opt(k));
+            } catch (JSONException ignored) {}
         }
     }
 
-    // Method to explicitly preload the cache
-    public void preloadTimeEventsAsync() {
-        synchronized (mTimeEventsCacheLock) {
-            if (mTimeEventsCache == null) {
-                if (!mTimeEventsCacheLoading) {
-                    mTimeEventsCacheLoading = true;
-                    new Thread(this::loadTimeEventsCache).start();
-                }
-            }
-        }
+    private static JSONObject copy(JSONObject src) {
+        final JSONObject out = new JSONObject();
+        mergeOnto(out, src);
+        return out;
     }
 
-    // access is synchronized outside (mEventTimings)
-    public void removeTimedEvent(String timeEventName) {
-        try {
-            final SharedPreferences prefs = mTimeEventsPreferences.get();
-            final SharedPreferences.Editor editor = prefs.edit();
-            editor.remove(timeEventName);
-            writeEdits(editor);
-
-            // Update cache if initialized
-            synchronized (mTimeEventsCacheLock) {
-                if (mTimeEventsCache != null) {
-                    mTimeEventsCache.remove(timeEventName);
-                }
-            }
-        } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Failed to remove time event", e);
-        } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Failed to remove time event", e.getCause());
+    private static JSONArray copyArray(JSONArray src) {
+        final JSONArray out = new JSONArray();
+        for (int i = 0; i < src.length(); i++) {
+            out.put(src.opt(i));
         }
+        return out;
     }
 
-    // access is synchronized outside (mEventTimings)
-    public void addTimeEvent(String timeEventName, Long timeEventTimestamp) {
-        try {
-            final SharedPreferences prefs = mTimeEventsPreferences.get();
-            final SharedPreferences.Editor editor = prefs.edit();
-            editor.putLong(timeEventName, timeEventTimestamp);
-            writeEdits(editor);
-
-            // Update cache if initialized
-            synchronized (mTimeEventsCacheLock) {
-                if (mTimeEventsCache != null) {
-                    mTimeEventsCache.put(timeEventName, timeEventTimestamp);
-                }
-            }
-        } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Failed to add time event", e);
-        } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Failed to add time event", e.getCause());
-        }
-    }
-
-    public synchronized boolean isNewVersion(String versionCode) {
-        if (versionCode == null) {
-            return false;
-        }
-
-        Integer version = Integer.valueOf(versionCode);
-        try {
-            if (sPreviousVersionCode == null) {
-                SharedPreferences oursprivacyPreferences = mOursPrivacyPreferences.get();
-                sPreviousVersionCode = oursprivacyPreferences.getInt("latest_version_code", -1);
-                if (sPreviousVersionCode == -1) {
-                    sPreviousVersionCode = version;
-                    SharedPreferences.Editor oursprivacyPreferencesEditor = mOursPrivacyPreferences.get().edit();
-                    oursprivacyPreferencesEditor.putInt("latest_version_code", version);
-                    writeEdits(oursprivacyPreferencesEditor);
-                }
-            }
-
-            if (sPreviousVersionCode < version) {
-                SharedPreferences.Editor oursprivacyPreferencesEditor = mOursPrivacyPreferences.get().edit();
-                oursprivacyPreferencesEditor.putInt("latest_version_code", version);
-                writeEdits(oursprivacyPreferencesEditor);
-                return true;
-            }
-        } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Couldn't write internal OursPrivacy shared preferences.", e.getCause());
-        } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Couldn't write internal OursPrivacy from shared preferences.", e);
-        }
-
-        return false;
-    }
-
-    public synchronized boolean isFirstLaunch(boolean dbExists, String token) {
-        if (sIsFirstAppLaunch == null) {
-            try {
-                SharedPreferences oursprivacyPreferences = mOursPrivacyPreferences.get();
-                boolean hasLaunched = oursprivacyPreferences.getBoolean("has_launched_" + token, false);
-                if (hasLaunched) {
-                    sIsFirstAppLaunch = false;
-                } else {
-                    sIsFirstAppLaunch = !dbExists;
-                    if (!sIsFirstAppLaunch) {
-                        setHasLaunched(token);
-                    }
-                }
-            } catch (ExecutionException | InterruptedException e) {
-                sIsFirstAppLaunch = false;
-            }
-        }
-
-        return sIsFirstAppLaunch;
-    }
-
-    public synchronized void setHasLaunched(String token) {
-        try {
-            SharedPreferences.Editor oursprivacyPreferencesEditor = mOursPrivacyPreferences.get().edit();
-            oursprivacyPreferencesEditor.putBoolean("has_launched_" + token, true);
-            writeEdits(oursprivacyPreferencesEditor);
-        } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Couldn't write internal OursPrivacy shared preferences.", e.getCause());
-        } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Couldn't write internal OursPrivacy shared preferences.", e);
-        }
-    }
-
-    public synchronized void setOptOutTracking(boolean optOutTracking, String token) {
-        mIsUserOptOut = optOutTracking;
-        writeOptOutFlag(token);
-    }
-
-    public synchronized boolean getOptOutTracking(String token) {
-        if (mIsUserOptOut == null) {
-            readOptOutFlag(token);
-            if (mIsUserOptOut == null) {
-                mIsUserOptOut = false;
-            }
-        }
-
-        return mIsUserOptOut;
-    }
-
-    //////////////////////////////////////////////////
-
-    // Must be called from a synchronized setting
-    private JSONObject getSuperPropertiesCache() {
-        if (mSuperPropertiesCache == null) {
-            readSuperProperties();
-        }
-        return mSuperPropertiesCache;
-    }
-
-    // All access should be synchronized on this
-    private void readSuperProperties() {
-        try {
-            final SharedPreferences prefs = mLoadStoredPreferences.get();
-            final String props = prefs.getString("super_properties", "{}");
-            OPLog.v(LOGTAG, "Loading Super Properties " + props);
-            mSuperPropertiesCache = new JSONObject(props);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Cannot load superProperties from SharedPreferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Cannot load superProperties from SharedPreferences.", e);
-        } catch (final JSONException e) {
-            OPLog.e(LOGTAG, "Cannot parse stored superProperties");
-            storeSuperProperties();
-        } finally {
-            if (mSuperPropertiesCache == null) {
-                mSuperPropertiesCache = new JSONObject();
-            }
-        }
-    }
-
-    // All access should be synchronized on this
-    private void readReferrerProperties() {
-        mReferrerPropertiesCache = new HashMap<>();
-
-        try {
-            final SharedPreferences referrerPrefs = mLoadReferrerPreferences.get();
-            referrerPrefs.unregisterOnSharedPreferenceChangeListener(mReferrerChangeListener);
-            referrerPrefs.registerOnSharedPreferenceChangeListener(mReferrerChangeListener);
-
-            final Map<String, ?> prefsMap = referrerPrefs.getAll();
-            for (final Map.Entry<String, ?> entry : prefsMap.entrySet()) {
-                final String prefsName = entry.getKey();
-                final Object prefsVal = entry.getValue();
-                mReferrerPropertiesCache.put(prefsName, prefsVal.toString());
-            }
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Cannot load referrer properties from shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Cannot load referrer properties from shared preferences.", e);
-        }
-    }
-
-    // All access should be synchronized on this
-    private void storeSuperProperties() {
-        if (mSuperPropertiesCache == null) {
-            OPLog.e(LOGTAG, "storeSuperProperties should not be called with uninitialized superPropertiesCache.");
-            return;
-        }
-
-        final String props = mSuperPropertiesCache.toString();
-        OPLog.v(LOGTAG, "Storing Super Properties " + props);
-
-        try {
-            final SharedPreferences prefs = mLoadStoredPreferences.get();
-            final SharedPreferences.Editor editor = prefs.edit();
-            editor.putString("super_properties", props);
-            writeEdits(editor);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Cannot store superProperties in shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Cannot store superProperties in shared preferences.", e);
-        }
-    }
-
-    // All access should be synchronized on this
-    private void readIdentities() {
-        SharedPreferences prefs = null;
-        try {
-            prefs = mLoadStoredPreferences.get();
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Cannot read distinct ids from sharedPreferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Cannot read distinct ids from sharedPreferences.", e);
-        }
-
-        if (prefs == null) {
-            return;
-        }
-
-        mEventsDistinctId = prefs.getString("events_distinct_id", null);
-        mEventsUserIdPresent = prefs.getBoolean("events_user_id_present", false);
-        mPeopleDistinctId = prefs.getString("people_distinct_id", null);
-        mAnonymousId = prefs.getString("anonymous_id", null);
-        mHadPersistedDistinctId = prefs.getBoolean("had_persisted_distinct_id", false);
-
-        if (mEventsDistinctId == null) {
-            mAnonymousId = UUID.randomUUID().toString();
-            mEventsDistinctId = "$device:" + mAnonymousId;
-            mEventsUserIdPresent = false;
-            writeIdentities();
-        }
-        mIdentitiesLoaded = true;
-    }
-
-    private void readOptOutFlag(String token) {
-        SharedPreferences prefs = null;
-        try {
-            prefs = mOursPrivacyPreferences.get();
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Cannot read opt out flag from sharedPreferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Cannot read opt out flag from sharedPreferences.", e);
-        }
-
-        if (prefs == null) {
-            return;
-        }
-        mIsUserOptOut = prefs.getBoolean("opt_out_" + token, false);
-    }
-
-    private void writeOptOutFlag(String token) {
-        try {
-            final SharedPreferences prefs = mOursPrivacyPreferences.get();
-            final SharedPreferences.Editor prefsEditor = prefs.edit();
-            prefsEditor.putBoolean("opt_out_" + token, mIsUserOptOut);
-            writeEdits(prefsEditor);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Can't write opt-out shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Can't write opt-out shared preferences.", e);
-        }
-    }
-
-    protected void removeOptOutFlag(String token) {
-        try {
-            final SharedPreferences prefs = mOursPrivacyPreferences.get();
-            final SharedPreferences.Editor prefsEditor = prefs.edit();
-            prefsEditor.remove("opt_out_" + token);
-            writeEdits(prefsEditor);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Can't remove opt-out shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Can't remove opt-out shared preferences.", e);
-        }
-    }
-
-    protected boolean hasOptOutFlag(String token) {
-        try {
-            final SharedPreferences prefs = mOursPrivacyPreferences.get();
-            return prefs.contains("opt_out_" + token);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Can't read opt-out shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Can't read opt-out shared preferences.", e);
-        }
-        return false;
-    }
-    // All access should be synchronized on this
-    private void writeIdentities() {
-        try {
-            final SharedPreferences prefs = mLoadStoredPreferences.get();
-            final SharedPreferences.Editor prefsEditor = prefs.edit();
-
-            prefsEditor.putString("events_distinct_id", mEventsDistinctId);
-            prefsEditor.putBoolean("events_user_id_present", mEventsUserIdPresent);
-            prefsEditor.putString("people_distinct_id", mPeopleDistinctId);
-            prefsEditor.putString("anonymous_id", mAnonymousId);
-            prefsEditor.putBoolean("had_persisted_distinct_id", mHadPersistedDistinctId);
-            writeEdits(prefsEditor);
-        } catch (final ExecutionException e) {
-            OPLog.e(LOGTAG, "Can't write distinct ids to shared preferences.", e.getCause());
-        } catch (final InterruptedException e) {
-            OPLog.e(LOGTAG, "Can't write distinct ids to shared preferences.", e);
-        }
-    }
-
-    private static void writeEdits(final SharedPreferences.Editor editor) {
-        editor.apply();
-    }
-
-    private final Future<SharedPreferences> mLoadStoredPreferences;
-    private final Future<SharedPreferences> mLoadReferrerPreferences;
-    private final Future<SharedPreferences> mTimeEventsPreferences;
-    private final Future<SharedPreferences> mOursPrivacyPreferences;
-    private final SharedPreferences.OnSharedPreferenceChangeListener mReferrerChangeListener;
-    private JSONObject mSuperPropertiesCache;
-    private final Object mSuperPropsLock = new Object();
-    private Map<String, String> mReferrerPropertiesCache;
-    private boolean mIdentitiesLoaded;
-    private String mEventsDistinctId;
-    private boolean mEventsUserIdPresent;
-    private String mPeopleDistinctId;
-    private String mAnonymousId;
-    private boolean mHadPersistedDistinctId;
-    private Boolean mIsUserOptOut;
-    private static Integer sPreviousVersionCode;
-    private static Boolean sIsFirstAppLaunch;
-
-    // Time events caching
-    private Map<String, Long> mTimeEventsCache = null;
-    private final Object mTimeEventsCacheLock = new Object();
-    private boolean mTimeEventsCacheLoading = false;
-
-    private static boolean sReferrerPrefsDirty = true;
-    private static final Object sReferrerPrefsLock = new Object();
-    private static final String LOGTAG = "OursPrivacyAPI.PIdentity";
+    private static final String LOGTAG = "OursPrivacy.Persist";
 }

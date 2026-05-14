@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI
+import com.oursprivacy.android.opmetrics.OursPrivacyInitOptions
 
 
 @Composable
@@ -30,16 +31,28 @@ fun UtilityPage(navController: NavHostController) {
     val showDialog = remember { mutableStateOf(false) }
     val dialogMessage = remember { mutableStateOf("") }
     val context = LocalContext.current
-    val oursprivacy = OursPrivacyAPI.getInstance(context, OURSPRIVACY_PROJECT_TOKEN, true)
+    val op = remember {
+        OursPrivacyAPI(context.applicationContext).also {
+            it.initialize(
+                OURSPRIVACY_PROJECT_TOKEN,
+                OursPrivacyInitOptions.builder().trackAutomaticEvents(true).build()
+            )
+        }
+    }
 
     val utilityActions = listOf(
-        Triple("Reset", "Event: \"Reset!\"", {
-            println("Resetting OursPrivacy instance")
-            oursprivacy.reset()
+        Triple("Reset", "Rotates visitor_id and clears default bags.", {
+            op.reset()
         }),
-        Triple("Flush", "Event: \"Flush!\"", {
-            println("Flushing OursPrivacy data")
-            oursprivacy.flush()
+        Triple("Flush", "Forces a flush of the event queue.", {
+            op.flush()
+        }),
+        Triple("Get visitor id", "Logs the current visitor_id.", {
+            println("visitor_id = ${op.visitorId}")
+        }),
+        Triple("Set visitor id (stitch)", "Sets a manual visitor_id and flips is_manually_set_id.", {
+            op.setVisitorId("demo-stitched-visitor")
+            op.flush()
         })
     )
 
