@@ -35,10 +35,10 @@ Privacy-first analytics for Android.
 
 ### 1. Install
 
-Add to your app's `build.gradle` dependencies:
+Add to your app's `build.gradle` dependencies (use the latest version from [Maven Central](https://central.sonatype.com/artifact/com.oursprivacy/oursprivacy-android)):
 
 ```gradle
-implementation "com.oursprivacy:oursprivacy-android:2.0.0"
+implementation "com.oursprivacy:oursprivacy-android:<latest>"
 ```
 
 Make sure `mavenCentral()` is listed in your repositories block.
@@ -247,7 +247,7 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
         "device_model": "Pixel 8",
         "screen_width": 1080,
         "screen_height": 2400,
-        "version": "2.0.0"
+        "version": "<sdk-version>"
       }
     }
   ]
