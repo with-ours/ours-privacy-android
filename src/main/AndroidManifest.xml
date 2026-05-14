@@ -24,7 +24,7 @@
         <!-- Set the following option to true if you wish to see the debug output from the OursPrivacy Android
              library. This may be useful in determining when track calls go out. The default value is false. -->
         <!--
-        <meta-data android:name="com.oursprivacy.android.MPConfig.EnableDebugLogging"
+        <meta-data android:name="com.oursprivacy.android.Config.EnableDebugLogging"
             android:value="true" />
         -->
 

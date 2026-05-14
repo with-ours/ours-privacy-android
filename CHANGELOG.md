@@ -1,63 +1,16 @@
-#
+# Changelog
 
-#### v1.0 (original)
+## v2.0.0-alpha.0
 
-* Initial release
+Breaking changes — see README → Migration from 1.x for upgrade instructions.
 
+- Removed People/Group analytics API
+- Removed super-properties API
+- Removed timed-events API
+- Removed multi-instance (named `getInstance`) support
+- Updated ingest endpoint
+- Renamed AndroidManifest meta-data keys (`MPConfig` → `Config`)
 
+## v1.0 (original)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Initial release.

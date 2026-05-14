@@ -1,0 +1,15 @@
+name: Publish
+
+# No-op placeholder. Real publish wiring comes in a later wave.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  noop:
+    name: Not yet wired
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Publishing is not yet configured."

@@ -49,7 +49,7 @@ public class HttpService implements RemoteService {
         Thread t = new Thread(new Runnable() {
             public void run() {
                 try {
-                    InetAddress apiOursPrivacyInet = InetAddress.getByName("api.oursprivacy.com");
+                    InetAddress apiOursPrivacyInet = InetAddress.getByName("cdn.oursprivacy.com");
                     sIsOursPrivacyBlocked = apiOursPrivacyInet.isLoopbackAddress() ||
                             apiOursPrivacyInet.isAnyLocalAddress();
                     if (sIsOursPrivacyBlocked) {
