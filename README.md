@@ -19,11 +19,14 @@ Privacy-first analytics for Android.
 - [API Reference](#api-reference)
   - [Initialization](#initialization)
   - [Core Tracking](#core-tracking)
+  - [Default Properties](#default-properties)
   - [Configuration](#configuration)
+  - [Identity](#identity)
+  - [Deep Link Attribution](#deep-link-attribution)
   - [Privacy Controls](#privacy-controls)
 - [Payload Structure](#payload-structure)
-- [Migration from 1.x](#migration-from-1x)
 - [FAQ](#faq)
+- [Development](#development)
 - [Support](#support)
 
 ---
@@ -45,44 +48,61 @@ Add permissions to `AndroidManifest.xml`:
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 
-<!-- Optional: lets the SDK batch intelligently based on connectivity -->
+<!-- Optional: lets the SDK avoid POSTs while offline -->
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
+
+**Min SDK:** API 21 (Android 5.0).
 
 ### 2. Initialize
 
 ```java
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI;
+import com.oursprivacy.android.opmetrics.OursPrivacyInitOptions;
 
-OursPrivacyAPI op = OursPrivacyAPI.getInstance(context, "YOUR_API_TOKEN", true);
+OursPrivacyAPI op = new OursPrivacyAPI(context);
+op.initialize(
+    "YOUR_API_TOKEN",
+    OursPrivacyInitOptions.builder()
+        .trackAutomaticEvents(true)
+        .build()
+);
 ```
 
-The SDK connects to `https://cdn.oursprivacy.com` by default — no endpoint configuration needed.
+The SDK connects to `https://cdn.oursprivacy.com` by default — no endpoint configuration needed. Every public method is a no-op (with a warning log) until `initialize` has been called.
 
-Hold a single `OursPrivacyAPI` instance for the lifetime of your app — typically in `Application.onCreate()`.
+Hold a single instance for the lifetime of your app — typically on a custom `Application` subclass or in a DI container.
 
 ### 3. Track Events
 
 ```java
 op.track("Button Pressed");
-op.track("Purchase", new JSONObject().put("value", 49.99).put("currency", "USD"));
+
+JSONObject props = new JSONObject();
+props.put("value", 49.99);
+props.put("currency", "USD");
+op.track("Purchase", props);
 ```
 
 ### 4. Identify Users
 
-After login, link events to a user:
+After login, link events to a user via `OursPrivacyUserProperties`:
 
 ```java
-HashMap<String, Object> userProperties = new HashMap<>();
-userProperties.put("email", "user@example.com");
-userProperties.put("external_id", "user-123");
+import com.oursprivacy.android.opmetrics.OursPrivacyUserProperties;
 
-op.identify("user-123", userProperties);
+op.identify(
+    OursPrivacyUserProperties.builder()
+        .externalId("user-123")
+        .email("user@example.com")
+        .firstName("Jane")
+        .build()
+);
 ```
 
 ### 5. Flush
 
-Events are batched and sent every 60 seconds by default. To send immediately:
+Events are batched and sent every 10 seconds by default. To send immediately:
 
 ```java
 op.flush();
@@ -92,27 +112,26 @@ op.flush();
 
 ## Complete Example
 
-```java
-import android.app.Application;
-import com.oursprivacy.android.opmetrics.OursPrivacyAPI;
+```kotlin
+class MyApplication : Application() {
+    lateinit var op: OursPrivacyAPI
 
-public class MyApp extends Application {
-    private OursPrivacyAPI op;
-
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        op = OursPrivacyAPI.getInstance(this, "YOUR_API_TOKEN", true);
+    override fun onCreate() {
+        super.onCreate()
+        op = OursPrivacyAPI(this)
+        op.initialize(
+            "YOUR_API_TOKEN",
+            OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .defaultEventProperties(mapOf("app_version" to BuildConfig.VERSION_NAME))
+                .build()
+        )
     }
 
-    public OursPrivacyAPI getAnalytics() {
-        return op;
+    fun trackPurchase() {
+        op.track("Purchase", JSONObject(mapOf("value" to 49.99, "currency" to "USD")))
     }
 }
-
-// In an Activity:
-OursPrivacyAPI op = ((MyApp) getApplication()).getAnalytics();
-op.track("Screen Viewed", new JSONObject().put("screen", "Home"));
 ```
 
 ---
@@ -121,278 +140,166 @@ op.track("Screen Viewed", new JSONObject().put("screen", "Home"));
 
 ### Initialization
 
-#### `OursPrivacyAPI.getInstance(context, token, trackAutomaticEvents)`
+#### `OursPrivacyAPI(Context)`
 
-Returns the SDK instance. Creates it on first call; returns the same instance on subsequent calls. Call this in `Application.onCreate()` and hold the reference.
+Constructor — takes only the application context. Call {@code initialize} exactly once before any other method.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `context` | `Context` | Yes | Application context |
-| `token` | `String` | Yes | Your project token |
-| `trackAutomaticEvents` | `boolean` | Yes | Record session and lifecycle events automatically |
+#### `void initialize(String token, OursPrivacyInitOptions options)`
 
-```java
-OursPrivacyAPI op = OursPrivacyAPI.getInstance(context, "YOUR_API_TOKEN", true);
-```
+Applies your project token and bootstrap options. Must be called exactly once. Pass `null` for `options` to accept all defaults. Every other public method is a no-op (and logs a warning) until `initialize` has run.
 
----
+`OursPrivacyInitOptions` is a builder POJO:
+
+| Field | Notes |
+| --- | --- |
+| `trackAutomaticEvents` | Emit built-in lifecycle events (`$app_open`, `$ae_first_open`, `$ae_session`, `$ae_updated`). Default false. |
+| `serverURL` | Override the ingest base URL. |
+| `visitorId` | Pre-set a `visitor_id`. Sets `is_manually_set_id: true`. |
+| `initialURL` | Parsed as a deep link on init (UTM + click IDs). Respects opt-out. |
+| `defaultEventProperties` | Merged into every `track()` call. |
+| `defaultUserCustomProperties` | Merged into `userProperties.custom_properties` on every track + identify. |
+| `defaultUserConsentProperties` | Merged into `userProperties.consent`. Subject to the consent-omission guard documented in [Default Properties](#default-properties). |
+| `optedOutByDefault` | If true and no prior opt-out decision is persisted, opts the user out on first launch. |
 
 ### Core Tracking
 
-#### `op.track(eventName)`
-#### `op.track(eventName, properties)`
+#### `void track(String eventName)`
+#### `void track(String eventName, JSONObject eventProperties)`
+#### `void track(String eventName, JSONObject eventProperties, OursPrivacyUserProperties userProperties)`
 
-Track an event with optional properties.
+Fires an event. `eventProperties` end up on the wire under `eventProperties`; `userProperties` get merged with the store-level default user-property bags and end up under `userProperties`.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `eventName` | `String` | Yes | Name of the event |
-| `properties` | `JSONObject` | No | Key/value pairs to attach to the event |
+#### `void identify(OursPrivacyUserProperties userProperties)`
 
-**Returns:** `void`
+Fires a `$identify` event. The same merge as `track()` applies. Caller stitches to external systems via `externalId` on the typed properties — there is no separate id argument.
 
-```java
-op.track("Page View");
-op.track("Purchase", new JSONObject().put("value", 49.99).put("currency", "USD"));
-```
+#### `void flush()`
 
-You can also pass a `Map<String, Object>` instead of `JSONObject`:
+Forces a flush of the event queue. The worker drains in batches (default 50, max 50) until the queue is empty.
 
-```java
-Map<String, Object> props = new HashMap<>();
-props.put("value", 49.99);
-op.trackMap("Purchase", props);
-```
+#### `void reset()`
 
----
+Clears the event queue, the four default-property bags, and rotates `visitor_id`. Preserves the opt-out flag.
 
-#### `op.identify(distinctId, userProperties)`
+### Default Properties
 
-Associate all future `track()` calls with the given user identity. Call this after a user logs in.
+The SDK maintains three caller-controlled bags merged into every event:
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `distinctId` | `String` | Yes | Your system's user ID |
-| `userProperties` | `HashMap<String, Object>` | No | User attributes to attach |
-
-**Returns:** `void`
-
-```java
-HashMap<String, Object> props = new HashMap<>();
-props.put("email", "jane@example.com");
-props.put("external_id", "db-user-456");
-props.put("first_name", "Jane");
-
-op.identify("db-user-456", props);
-```
-
----
-
-#### `op.flush()`
-
-Push all queued events to the server immediately. Useful before the app goes to background or a user logs out.
-
-**Returns:** `void`
-
-```java
-op.flush();
-```
-
----
-
-#### `op.reset()`
-
-Clear the current user identity. Generates a new random visitor ID. Call this when a user logs out.
-
-**Returns:** `void`
-
-```java
-op.reset();
-```
-
----
+- **`updateDefaultEventProperties(JSONObject)`** → merged into `eventProperties` on every `track()`.
+- **`updateDefaultUserCustomProperties(JSONObject)`** → merged into `userProperties.custom_properties`.
+- **`updateDefaultUserConsentProperties(JSONObject)`** → merged into `userProperties.consent`. When neither the defaults nor the per-call data carry any consent keys, `consent` is omitted from the wire entirely — emitting an empty `consent: {}` can clobber consent that was previously written by another path.
 
 ### Configuration
 
-#### `op.setServerURL(serverURL)`
+| Method | Default | Notes |
+| --- | --- | --- |
+| `setServerURL(String)` | `https://cdn.oursprivacy.com` | Proxy support via `setServerURL(String, ProxyServerInteractor)`. |
+| `setFlushBatchSize(int)` | 50 | Clamped to `[1, 50]`. |
+| `setFlushOnBackground(boolean)` | true | Flush when the app moves to background. |
+| `setLoggingEnabled(boolean)` | false | Verbose worker logging. |
 
-Override the ingest URL after initialization. Useful for routing through a proxy or pointing at a local capture server.
+### Identity
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `serverURL` | `String` | Yes | Base URL for API requests |
+#### `String getVisitorId()`
 
-**Returns:** `void`
+Returns the in-memory `visitor_id` (UUID).
 
-```java
-op.setServerURL("https://your-proxy.example.com");
-```
+#### `void setVisitorId(String)`
 
----
+Replaces the auto-generated `visitor_id` and sets `is_manually_set_id: true` on every subsequent envelope. Use this to stitch a visitor between web and app.
 
-#### `op.setFlushBatchSize(n)`
+### Deep Link Attribution
 
-Set the maximum number of events sent in a single network request. Maximum value is 50; values above 50 are clamped.
+#### `void trackDeepLink(String url)`
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `n` | `int` | Yes | Number of events per batch (max 50) |
+Parses `url` for the six canonical UTM keys, twenty-six click-ID keys, and the `ours_visitor_id` stitch parameter. Fires `$deep_link_opened` with the original URL, replaces the attribution overlay (so stale UTMs don't leak between links), and — if `ours_visitor_id` is present — calls `setVisitorId()`.
 
-**Returns:** `void`
-
-```java
-op.setFlushBatchSize(25);
-```
-
----
-
-#### `op.setEnableLogging(enabled)`
-
-Enable or disable debug logging. Disabled by default.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `enabled` | `boolean` | Yes | Whether to enable SDK logging |
-
-**Returns:** `void`
-
-```java
-op.setEnableLogging(true);
-```
-
-You can also enable debug logging via `AndroidManifest.xml` without a code change:
-
-```xml
-<application>
-    <meta-data
-        android:name="com.oursprivacy.android.Config.EnableDebugLogging"
-        android:value="true" />
-</application>
-```
-
----
+Attribution overlays live in `defaultProperties`, not `userProperties`.
 
 ### Privacy Controls
 
-#### `op.optOutTracking()`
-
-Stop all tracking immediately. Queued events that have not been flushed are discarded. Call `flush()` first if you want to preserve them.
-
-**Returns:** `void`
-
-```java
-op.flush();
-op.optOutTracking();
-```
-
----
-
-#### `op.optInTracking()`
-
-Resume tracking after a previous call to `optOutTracking()`. This also sends an `$opt_in` event to the server.
-
-**Returns:** `void`
-
-```java
-op.optInTracking();
-```
-
----
-
-#### `op.hasOptedOutTracking()`
-
-Check whether the current user has opted out of tracking.
-
-**Returns:** `boolean`
-
-```java
-if (op.hasOptedOutTracking()) {
-    // show consent UI
-}
-```
+- **`optOutTracking()`** — clears the in-flight queue, wipes the four default-property bags, and persists the opt-out flag. Subsequent `track()` / `identify()` / `flush()` calls are no-ops.
+- **`optInTracking()`** — clears the opt-out flag and fires `$opt_in`.
+- **`hasOptedOutTracking()`** — current persisted opt-out state.
 
 ---
 
 ## Payload Structure
 
-The SDK sends a JSON body to `POST /ingest` on the configured server URL.
+Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
 
 ```json
 {
-  "token": "your-project-token",
+  "token": "<project token>",
   "is_manually_set_id": false,
   "data": [
     {
       "event": "Purchase",
-      "visitor_id": "550e8400-e29b-41d4-a716-446655440000",
-      "distinct_id": "ecff9f0e-d4f8-4d9e-b2f8-8d9b2fcdf7b2",
-      "eventProperties": {
-        "value": 49.99,
-        "currency": "USD"
-      },
-      "userProperties": {
-        "custom_properties": {},
-        "consent": {}
-      },
+      "visitor_id": "1f0c…",
+      "distinct_id": "ae8a…",
+      "eventProperties": { "value": 49.99, "currency": "USD" },
+      "userProperties": null,
       "defaultProperties": {
         "device_type": "mobile",
         "os_name": "Android",
         "os_version": "14",
+        "device_vendor": "Google",
+        "device_model": "Pixel 8",
         "screen_width": 1080,
         "screen_height": 2400,
-        "visitor_id": "550e8400-e29b-41d4-a716-446655440000"
+        "version": "2.0.0"
       }
     }
   ]
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `token` | Your project token |
-| `is_manually_set_id` | `true` when visitor ID was set explicitly |
-| `data` | Array of event objects in this batch |
-| `event` | Event name. Identify events use `$identify` |
-| `visitor_id` | Stable visitor UUID for this install |
-| `distinct_id` | Per-event UUID for this occurrence |
-| `eventProperties` | Properties from `track()` |
-| `userProperties.custom_properties` | Custom user attributes from `identify()` |
-| `userProperties.consent` | Consent flags from `identify()` |
-| `defaultProperties` | Automatically collected device/SDK metadata |
+- `visitor_id` is stable per install (or per `setVisitorId(…)`).
+- `distinct_id` is a fresh UUID per event.
+- `userProperties` is `null` when the caller passes no per-call properties and no default user bags are configured.
+- `eventProperties` is `null` when the merged event-property bag is empty.
+- Unknown fields are dropped server-side.
 
----
-
-## Migration from 1.x
-
-2.0.0 is a hard break. Key removals:
-
-- **People/Group API removed.** `getPeople()`, group methods, and all `people.*` calls are gone.
-- **Super-properties removed.** `registerSuperProperties`, `unregisterSuperProperty`, `clearSuperProperties`, `getSuperProperties` — use `defaultProperties` on `track()` instead.
-- **Timed events removed.** `timeEvent`, `eventElapsedTime`, `clearTimedEvent`.
-- **Named instances removed.** All `getInstance(context, token, name, ...)` overloads are gone. Use the single `getInstance(context, token, trackAutomaticEvents)`.
-- **Endpoint updated.** Default endpoint is now `https://cdn.oursprivacy.com/ingest`.
-- **Manifest keys renamed.** `com.oursprivacy.android.MPConfig.*` → `com.oursprivacy.android.Config.*`.
+**Naming**: camelCase at the API surface (`externalId`, `phoneNumber`, `customProperties`); snake_case on the wire (`external_id`, `phone_number`, `custom_properties`).
 
 ---
 
 ## FAQ
 
-**Why aren't my events showing up?**
+**Where do typed user properties land on the wire?**
+Each named field (`email`, `externalId`, `phoneNumber`, `firstName`, `lastName`, `gender`, `dateOfBirth`, `city`, `state`, `zip`, `country`, `companyName`, `jobTitle`, `ip`) becomes a snake_case top-level key under `userProperties`. `customProperties` and `consent` are nested objects under the same parent.
 
-Events batch and flush every 60 seconds by default. Call `op.flush()` to send immediately. Enable debug logging with `op.setEnableLogging(true)` to see what's happening. Check that `hasOptedOutTracking()` returns `false`.
+**Why is `consent` sometimes missing from `userProperties`?**
+Emitting an empty `consent: {}` can clobber consent flags already persisted on the visitor record. The SDK omits the key entirely when both the per-call and default consent bags are empty.
 
-**Can I run more than one instance in the same app?**
+**How big is a flush?**
+At most 50 events per POST. Configure with `setFlushBatchSize(int)` (clamped to `[1, 50]`).
 
-`getInstance` uses your token as the instance key, so calling it with different tokens returns different instances. Use one token per app in most cases.
+**Do I need to call `flush()` on shutdown?**
+It's good practice. The SDK flushes on app background by default (toggle via `setFlushOnBackground(boolean)`), but a manual `flush()` in `onDestroy()` guarantees the queue is drained.
 
-**What Android versions are supported?**
+**Can I use this with a proxy?**
+Yes. `setServerURL(String, ProxyServerInteractor)` lets you intercept requests for header injection or response observation.
 
-minSdk 21 (Android 5.0 Lollipop) and above.
+---
+
+## Development
+
+**Run the JVM tests + compile the demo:**
+
+```sh
+./gradlew test :oursprivacydemo:assembleDebug
+```
+
+The unit + integration tests under `src/test/` use Robolectric to verify the canonical envelope shape end-to-end — no device or emulator needed.
+
+**Run the demo app:** copy `local.properties.example` → `local.properties` and add your token, then open the project in Android Studio and run the `oursprivacydemo` target. The demo links to the local SDK via `project(":")` so source changes are picked up without publishing.
+
+**Inspect the wire payload:** `tools/payload-recorder/server.py` is a small Python HTTP server that records every POST the SDK sends. Point the demo at it by setting `RECORDER_URL` in `local.properties`.
 
 ---
 
 ## Support
 
-- [Documentation](https://docs.oursprivacy.com/docs/android-sdk)
-- [GitHub Issues](https://github.com/with-ours/ours-privacy-android/issues)
-- Email: support@oursprivacy.com
+- Docs: [docs.oursprivacy.com/docs/android-sdk](https://docs.oursprivacy.com/docs/android-sdk)
+- Issues: [github.com/with-ours/ours-privacy-android/issues](https://github.com/with-ours/ours-privacy-android/issues)
