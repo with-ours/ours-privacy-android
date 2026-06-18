@@ -1,13 +1,13 @@
-# Supply-chain hardening: Dependabot opens PRs to keep GitHub Actions
-# pinned to current commit SHAs.
+# Dependabot keeps GitHub Actions pinned to SHAs.
 #
-# When Dependabot proposes a bump, the PR will include the action's resolved
-# commit SHA with a trailing version comment (e.g.
-# `uses: actions/checkout@<40-char SHA> # v6.0.2`). Accept those PRs to land
+# Action bumps: the resolved PR includes the action's commit SHA with a
+# trailing version comment (e.g.
+# `uses: actions/checkout@<40-char SHA> # v6.0.2`). Accept these to keep
 # SHA pinning across this repo's workflows.
 
 version: 2
 updates:
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -21,7 +21,10 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "fix"
-    # GitHub recommends pinning by SHA for supply-chain safety. Dependabot
-    # honors this when the existing reference is a SHA; for refs that are
-    # still on a major-tag float, the first Dependabot PR will replace the
-    # float with a SHA pin. After that, weekly bumps land as SHA-to-SHA.
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
