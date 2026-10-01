@@ -22,5 +22,7 @@ class TrackingFlowTest {
             compose.onNodeWithText(button).performClick()
             compose.onNodeWithText("OK").performClick()
         }
+        // Flush is asynchronous, so the last request needs time to reach the recorder before instrumentation exits.
+        Thread.sleep(5_000)
     }
 }
