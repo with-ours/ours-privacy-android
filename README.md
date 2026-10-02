@@ -52,7 +52,7 @@ Add permissions to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
 
-**Min SDK:** API 21 (Android 5.0).
+**Version 3.0.0 upgrade:** Set your app's `minSdk` to at least 23 (Android 6.0) and `compileSdk` to at least 36. Version 2.0.0 supports API 21.
 
 ### 2. Initialize
 
@@ -285,17 +285,25 @@ Yes. `setServerURL(String, ProxyServerInteractor)` lets you intercept requests f
 
 ## Development
 
-**Run the JVM tests + compile the demo:**
+**Run JVM tests, lint, and compile the demo:**
 
 ```sh
-./gradlew test :oursprivacydemo:assembleDebug
+./gradlew test lint :oursprivacydemo:assembleDebug
 ```
 
-The unit + integration tests under `src/test/` use Robolectric to verify the canonical envelope shape end-to-end — no device or emulator needed.
+The SDK tests under `src/test/` use Robolectric to verify the ingest envelope without a device. The demo has JVM and instrumented UI tests. Lint uses a baseline in each module.
 
-**Run the demo app:** copy `local.properties.example` → `local.properties` and add your token, then open the project in Android Studio and run the `oursprivacydemo` target. The demo links to the local SDK via `project(":")` so source changes are picked up without publishing.
+**Run the demo app:** copy `local.properties.example` to `local.properties` and add your token, then run the `oursprivacydemo` target. The demo uses the local SDK module by default. Its tracking screen asks for a token when none is configured.
 
-**Inspect the wire payload:** `tools/payload-recorder/server.py` is a small Python HTTP server that records every POST the SDK sends. Point the demo at it by setting `RECORDER_URL` in `local.properties`.
+**Run E2E locally:** start an API 36 emulator with the Android SDK, then run:
+
+```sh
+./tools/run-e2e.sh
+```
+
+The command starts `tools/payload-recorder/server.py`, builds the demo with a test token and `RECORDER_URL`, runs the Compose UI test, and checks the recorded event payloads and SDK version. It needs Java 17, the Android SDK, and Python 3; it needs no Ours Privacy account. The same command runs in CI.
+
+**Test the published artifact:** `./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PpublishedSdkVersion=2.0.0` builds against the currently published SDK. Update `publishedSdkVersion` after a new version reaches Maven Central.
 
 ---
 

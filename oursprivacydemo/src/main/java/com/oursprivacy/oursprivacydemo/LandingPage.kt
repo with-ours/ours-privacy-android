@@ -29,14 +29,20 @@ fun LandingPage(navController: NavHostController) {
             .fillMaxSize()
             .padding(innerPadding)
             .padding(16.dp)) {
-            Button(
-                onClick = { navController.navigate("trackingPage") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(red = 123, green = 128, blue = 255)),
-            ) {
-                Text("Tracking")
+            for ((label, route) in listOf(
+                "Tracking" to "trackingPage",
+                "Utility" to "utilityPage",
+                "GDPR" to "gdprPage",
+            )) {
+                Button(
+                    onClick = { navController.navigate(route) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(red = 123, green = 128, blue = 255)),
+                ) {
+                    Text(label)
+                }
             }
         }
     }

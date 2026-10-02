@@ -1,28 +1,36 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.compose.compiler)
 }
 
 val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
-    if (f.exists()) load(f.inputStream())
+    if (f.exists()) f.inputStream().use(::load)
 }
+val recorderUrl = project.findProperty("recorderUrl") as String?
+    ?: localProps.getProperty("RECORDER_URL", "")
+val demoToken = project.findProperty("demoToken") as String?
+    ?: localProps.getProperty("OURSPRIVACY_TOKEN", "")
 
 android {
     namespace = "com.oursprivacy.oursprivacydemo"
-    compileSdk = 35
+    compileSdk = 36
+    lint {
+        baseline = file("lint-baseline.xml")
+    }
 
     defaultConfig {
         applicationId = "com.oursprivacy.oursprivacydemo"
-        minSdk = 21
-        targetSdk = 35
+        minSdk = 23
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
-        buildConfigField("String", "OURSPRIVACY_TOKEN", "\"${localProps["OURSPRIVACY_TOKEN"] ?: ""}\"")
-        buildConfigField("String", "RECORDER_URL", "\"${localProps["RECORDER_URL"] ?: ""}\"")
+        buildConfigField("String", "OURSPRIVACY_TOKEN", "\"$demoToken\"")
+        buildConfigField("String", "RECORDER_URL", "\"$recorderUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -45,14 +53,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.1"
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     packaging {
         resources {
@@ -61,37 +63,38 @@ android {
     }
 }
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(8)
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
     }
 }
 
 val usePublished = project.findProperty("usePublished") == "true"
 val sdkVersion = rootProject.properties["VERSION_NAME"] as String? ?: "2.0.0-alpha.0"
+val publishedSdkVersion = project.findProperty("publishedSdkVersion") as String? ?: sdkVersion
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
-    implementation("androidx.activity:activity-compose:1.9.1")
-    implementation(platform("androidx.compose:compose-bom:2024.08.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.navigation:navigation-runtime-ktx:2.7.7")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation(libs.core.ktx)
+    implementation(libs.lifecycle.runtime)
+    implementation(libs.activity.compose)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.material.icons)
+    implementation(libs.navigation.runtime)
+    implementation(libs.navigation.compose)
     if (usePublished) {
-        implementation("com.oursprivacy:oursprivacy-android:$sdkVersion")
+        implementation("com.oursprivacy:oursprivacy-android:$publishedSdkVersion")
     } else {
         implementation(project(":oursprivacy-android"))
     }
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2024.08.00"))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
-    implementation(kotlin("script-runtime"))
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.espresso.core)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.tooling)
+    debugImplementation(libs.compose.ui.test.manifest)
 }
