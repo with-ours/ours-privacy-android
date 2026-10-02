@@ -1,26 +1,15 @@
 package com.oursprivacy.oursprivacydemo
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.oursprivacy.android.opmetrics.OursPrivacyAPI
 
 @Composable
 fun NavGraph(navController: NavHostController, modifier: Modifier = Modifier) {
-    val appContext = LocalContext.current.applicationContext
-    val op = remember(appContext) {
-        if (OURSPRIVACY_PROJECT_TOKEN.isBlank()) {
-            null
-        } else {
-            OursPrivacyAPI(appContext).also {
-                it.initialize(OURSPRIVACY_PROJECT_TOKEN, demoInitOptions(BuildConfig.RECORDER_URL))
-            }
-        }
-    }
+    val op = (LocalContext.current.applicationContext as DemoApplication).sdk
     NavHost(
         navController = navController,
         startDestination = "landingPage",
