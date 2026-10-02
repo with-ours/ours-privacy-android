@@ -52,7 +52,7 @@ Add permissions to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
 
-**Min SDK:** API 23 (Android 6.0) starting with v3.0.0. Version 2.0.0 supports API 21.
+**Version 3.0.0 upgrade:** Set your app's `minSdk` to at least 23 (Android 6.0) and `compileSdk` to at least 36. Version 2.0.0 supports API 21.
 
 ### 2. Initialize
 

@@ -32,6 +32,29 @@ class PayloadValidationTest(unittest.TestCase):
                 "userProperties": {"phone_number": "+1-555-0100"},
                 "defaultProperties": {"version": version},
             },
+            {
+                "event": "$opt_in",
+                "visitor_id": "visitor",
+                "distinct_id": "four",
+                "eventProperties": None,
+                "userProperties": None,
+                "defaultProperties": {"version": version},
+            },
+            {
+                "event": "$deep_link_opened",
+                "visitor_id": "visitor",
+                "distinct_id": "five",
+                "eventProperties": {
+                    "url": "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
+                },
+                "userProperties": None,
+                "defaultProperties": {
+                    "version": version,
+                    "utm_source": "demo",
+                    "utm_medium": "android",
+                    "gclid": "demoGclid",
+                },
+            },
         ]
         (Path(directory) / "001_ingest.json").write_text(
             json.dumps({"token": "e2e-token", "data": events})
@@ -45,5 +68,46 @@ class PayloadValidationTest(unittest.TestCase):
     def test_rejects_wrong_version(self):
         with tempfile.TemporaryDirectory() as directory:
             self.write_capture(directory, "old")
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_wrong_version_on_additional_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            envelope["data"].append(
+                {
+                    "event": "$app_open",
+                    "visitor_id": "visitor",
+                    "distinct_id": "four",
+                    "defaultProperties": {"version": "old"},
+                }
+            )
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_missing_deep_link_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            envelope["data"] = [
+                event for event in envelope["data"] if event["event"] != "$deep_link_opened"
+            ]
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_missing_opt_in_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            envelope["data"] = [
+                event for event in envelope["data"] if event["event"] != "$opt_in"
+            ]
+            path.write_text(json.dumps(envelope))
             with self.assertRaises(AssertionError):
                 validate(Path(directory), "2.0.0")

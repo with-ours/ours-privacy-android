@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   test:
-    name: Unit tests and lint
+    name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -61,6 +61,23 @@ jobs:
 
       - name: Build demo against published SDK
         run: ./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PpublishedSdkVersion=2.0.0
+
+      - name: Verify SDK publication metadata
+        run: |
+          ./gradlew :oursprivacy-android:publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          publication = Path("oursprivacy-android/build/publications/maven")
+          metadata = json.loads((publication / "module.json").read_text())
+          version = next(line.split("=", 1)[1] for line in Path("gradle.properties").read_text().splitlines() if line.startswith("VERSION_NAME="))
+          assert metadata["component"]["version"] == version
+          assert all(dep.get("module") != "kotlin-stdlib" for variant in metadata["variants"] for dep in variant.get("dependencies", []))
+          pom = ElementTree.parse(publication / "pom-default.xml")
+          assert all(node.text != "kotlin-stdlib" for node in pom.iter("{*}artifactId"))
+          PY
 
   e2e:
     name: Demo emulator E2E
