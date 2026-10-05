@@ -285,6 +285,8 @@ Yes. `setServerURL(String, ProxyServerInteractor)` lets you intercept requests f
 
 ## Development
 
+The current source requires Java 17 and Android SDK platform 37. Apps consuming an SDK built from this source must also use `compileSdk` 37 or later because of the updated AndroidX dependencies.
+
 **Run JVM tests, lint, and compile the demo:**
 
 ```sh
