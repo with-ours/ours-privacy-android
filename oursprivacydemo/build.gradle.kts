@@ -17,14 +17,15 @@ val demoToken = project.findProperty("demoToken") as String?
 
 android {
     namespace = "com.oursprivacy.oursprivacydemo"
-    compileSdk = 36
+    compileSdk = 37
     lint {
         baseline = file("lint-baseline.xml")
     }
 
     defaultConfig {
         applicationId = "com.oursprivacy.oursprivacydemo"
-        minSdk = 23
+        // Navigation 2.10 requires API 24; the SDK library still supports API 23.
+        minSdk = 24
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
