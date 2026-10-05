@@ -24,7 +24,8 @@ android {
 
     defaultConfig {
         applicationId = "com.oursprivacy.oursprivacydemo"
-        minSdk = 23
+        // Navigation 2.10 requires API 24; the SDK library still supports API 23.
+        minSdk = 24
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
