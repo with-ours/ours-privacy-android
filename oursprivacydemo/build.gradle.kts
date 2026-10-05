@@ -17,7 +17,7 @@ val demoToken = project.findProperty("demoToken") as String?
 
 android {
     namespace = "com.oursprivacy.oursprivacydemo"
-    compileSdk = 36
+    compileSdk = 37
     lint {
         baseline = file("lint-baseline.xml")
     }
