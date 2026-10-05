@@ -22,6 +22,26 @@ seq = 0
 class RecorderHandler(http.server.BaseHTTPRequestHandler):
     out_dir: str = "/tmp/op-captures"
 
+    def do_GET(self):
+        if self.path != "/events":
+            self.send_error(404)
+            return
+
+        events = []
+        for filename in sorted(os.listdir(self.out_dir)):
+            if not filename.endswith("_ingest.json"):
+                continue
+            with open(os.path.join(self.out_dir, filename)) as capture:
+                envelope = json.load(capture)
+            events.extend(event["event"] for event in envelope["data"])
+
+        body = json.dumps({"events": events}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         global seq
         length = int(self.headers.get("Content-Length", 0))

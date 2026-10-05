@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -19,27 +19,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.oursprivacy.android.opmetrics.OursPrivacyAPI
-import com.oursprivacy.android.opmetrics.OursPrivacyInitOptions
 
 
 @Composable
-fun UtilityPage(navController: NavHostController) {
-    val showDialog = remember { mutableStateOf(false) }
-    val dialogMessage = remember { mutableStateOf("") }
-    val context = LocalContext.current
-    val op = remember {
-        OursPrivacyAPI(context.applicationContext).also {
-            it.initialize(
-                OURSPRIVACY_PROJECT_TOKEN,
-                OursPrivacyInitOptions.builder().trackAutomaticEvents(true).build()
-            )
-        }
+fun UtilityPage(navController: NavHostController, op: OursPrivacyAPI?) {
+    if (op == null) {
+        Text("Set OURSPRIVACY_TOKEN in local.properties to use tracking.")
+        return
     }
 
+    val showDialog = remember { mutableStateOf(false) }
+    val dialogMessage = remember { mutableStateOf("") }
     val utilityActions = listOf(
         Triple("Reset", "Rotates visitor_id and clears default bags.", {
             op.reset()
@@ -63,7 +56,7 @@ fun UtilityPage(navController: NavHostController) {
                 title = { Text(text = "Utility Calls") },
                 navigationIcon = {
                     IconButton(onClick = { navController.navigateUp() }) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
             )
