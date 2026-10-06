@@ -18,6 +18,7 @@ import java.lang.ref.WeakReference;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Runnable check;
     private Runnable checkpoint;
+    private long nextCheckpointElapsed = -1;
     private MobileSession.TimePoint pauseTimePoint;
     private boolean mIsForeground = false;
     private boolean mPaused = true;
@@ -59,20 +60,21 @@ import java.lang.ref.WeakReference;
             public void run() {
                 if (mIsForeground && mPaused) {
                     mIsForeground = false;
+                    JSONObject sessionProperties = null;
                     try {
                         double sessionLength = System.currentTimeMillis() - sStartSessionTime;
                         if (sessionLength >= mConfig.getMinimumSessionDuration() && sessionLength < mConfig.getSessionTimeoutDuration() && mMpInstance.getTrackAutomaticEvents()) {
                             double elapsedTime = sessionLength / 1000;
                             double elapsedTimeRounded = Math.round(elapsedTime * 10.0) / 10.0;
-                            JSONObject sessionProperties = new JSONObject();
+                            sessionProperties = new JSONObject();
                             sessionProperties.put(AutomaticEvents.SESSION_LENGTH, elapsedTimeRounded);
-                            mMpInstance.track(AutomaticEvents.SESSION, sessionProperties, true);
                         }
                     } catch (JSONException e) {
                         e.printStackTrace();
                     }
-                    mMpInstance.onBackground(pauseTimePoint);
+                    mMpInstance.onBackground(pauseTimePoint, sessionProperties);
                     pauseTimePoint = null;
+                    nextCheckpointElapsed = -1;
                 }
             }
         }, CHECK_DELAY);
@@ -101,6 +103,8 @@ import java.lang.ref.WeakReference;
             // App is in foreground now
             sStartSessionTime = (double) System.currentTimeMillis();
             mMpInstance.onForeground();
+            nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                    + MobileSession.ENGAGEMENT_THRESHOLD_MS;
         }
         scheduleCheckpoint();
     }
@@ -109,15 +113,20 @@ import java.lang.ref.WeakReference;
         if (checkpoint != null) {
             mHandler.removeCallbacks(checkpoint);
         }
+        if (nextCheckpointElapsed < 0) return;
         checkpoint = new Runnable() {
             @Override
             public void run() {
                 if (!mIsForeground || mPaused) return;
                 mMpInstance.onCheckpoint();
-                mHandler.postDelayed(this, MobileSession.ENGAGEMENT_THRESHOLD_MS);
+                nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                        + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+                scheduleCheckpoint();
             }
         };
-        mHandler.postDelayed(checkpoint, MobileSession.ENGAGEMENT_THRESHOLD_MS);
+        long remaining = Math.max(0, nextCheckpointElapsed
+                - mMpInstance.captureMobileTimePoint().elapsedMillis);
+        mHandler.postDelayed(checkpoint, remaining);
     }
 
     @Override

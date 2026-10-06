@@ -82,18 +82,14 @@ final class MobileSession {
         private final String eventName;
         private final MobileSnapshot snapshot;
         private final JSONObject properties;
-        private final JSONObject attributionProperties;
 
         MobileFact(String id, String visitorId, String eventName,
-                   MobileSnapshot snapshot, JSONObject properties,
-                   JSONObject attributionProperties) {
+                   MobileSnapshot snapshot, JSONObject properties) {
             this.id = id;
             this.visitorId = visitorId;
             this.eventName = eventName;
             this.snapshot = snapshot;
             this.properties = copy(properties);
-            this.attributionProperties = attributionProperties == null
-                    ? null : copy(attributionProperties);
         }
 
         String id() {
@@ -116,10 +112,6 @@ final class MobileSession {
             return copy(properties);
         }
 
-        JSONObject attributionProperties() {
-            return attributionProperties == null ? null : copy(attributionProperties);
-        }
-
         JSONObject toJson() {
             JSONObject value = new JSONObject();
             put(value, "id", id);
@@ -131,9 +123,6 @@ final class MobileSession {
             if (snapshot.appVersion != null) put(value, "app_version", snapshot.appVersion);
             if (snapshot.appBuild != null) put(value, "app_build", snapshot.appBuild);
             put(value, "event_properties", properties);
-            if (attributionProperties != null) {
-                put(value, "attribution_properties", attributionProperties);
-            }
             return value;
         }
 
@@ -143,8 +132,7 @@ final class MobileSession {
                     value.optString("app_version", null), value.optString("app_build", null));
             return new MobileFact(value.optString("id"), value.optString("visitor_id"),
                     value.optString("event"), snapshot,
-                    value.optJSONObject("event_properties"),
-                    value.optJSONObject("attribution_properties"));
+                    value.optJSONObject("event_properties"));
         }
     }
 
@@ -226,6 +214,11 @@ final class MobileSession {
 
     synchronized TimePoint captureTimePoint() {
         return new TimePoint(clock.wallMillis(), clock.elapsedMillis());
+    }
+
+    synchronized MobileSnapshot snapshotAt(TimePoint point) {
+        if (disabled) return null;
+        return snapshot(identity.getMobileState(token), point.wallMillis);
     }
 
     synchronized List<MobileFact> background() {
@@ -430,8 +423,7 @@ final class MobileSession {
     private MobileFact fact(String name, PersistentIdentity.MobileState state, long nowWall,
                             JSONObject properties) {
         return new MobileFact(UUID.randomUUID().toString(), identity.getVisitorId(), name,
-                snapshot(state, nowWall), properties,
-                identity.getAttributionDefaultProperties());
+                snapshot(state, nowWall), properties);
     }
 
     private void persistFacts(PersistentIdentity.MobileState state, List<MobileFact> facts) {

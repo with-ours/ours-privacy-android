@@ -163,6 +163,46 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void canonicalFactsOmitCustomerFieldsWhileManualBookingRetainsThem()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .initialURL("https://example.test/?ours_visitor_id=stitched&utm_source=campaign")
+                .defaultEventProperties(jsonOf("caller_field", "caller-value"))
+                .defaultUserCustomProperties(jsonOf("segment", "test-segment"))
+                .build());
+        op.onForeground();
+        clock.advance(10_000);
+        op.onBackground();
+        op.track("appointment_booked", jsonOf("appointment_id", "booking-3"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject item = data.getJSONObject(i);
+            if (!item.getString("event").startsWith("$mobile_")) continue;
+            assertEquals("stitched", item.getString("visitor_id"));
+            assertFalse(item.getJSONObject("defaultProperties").has("utm_source"));
+            assertTrue(item.isNull("userProperties"));
+            assertTrue(item.isNull("eventProperties")
+                    || !item.getJSONObject("eventProperties").has("caller_field"));
+        }
+        JSONObject booking = find(data, "appointment_booked");
+        assertEquals("stitched", booking.getString("visitor_id"));
+        assertEquals("campaign", booking.getJSONObject("defaultProperties")
+                .getString("utm_source"));
+        assertEquals("caller-value", booking.getJSONObject("eventProperties")
+                .getString("caller_field"));
+        assertEquals("test-segment", booking.getJSONObject("userProperties")
+                .getJSONObject("custom_properties").getString("segment"));
+        assertEquals(1, count(data, "$mobile_first_open"));
+        assertEquals(1, count(data, "$mobile_session_engagement"));
+    }
+
+    @Test
     public void backgroundAndWarmReturnEmitOneEngagementAndReuseSession()
             throws Exception {
         FakeClock clock = new FakeClock();
@@ -358,7 +398,7 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
-    public void replayedFirstOpenKeepsAttributionFromItsOriginalForeground()
+    public void replayedFirstOpenOmitsAttributionFromOriginalForeground()
             throws Exception {
         FakeClock clock = new FakeClock();
         AtomicBoolean failQueueCommit = new AtomicBoolean(true);
@@ -368,15 +408,19 @@ public class OursPrivacyIntegrationTest {
                 .initialURL("https://example.test/?utm_source=first")
                 .build());
         op.onForeground();
+        assertFalse(mobileState().getJSONArray("pending_facts").getJSONObject(0)
+                .has("attribution_properties"));
         failQueueCommit.set(false);
         op.trackDeepLink("https://example.test/?utm_source=second");
+        op.track("appointment_booked");
         op.flush();
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
 
-        JSONObject firstOpen = find(mNetwork.bodyAt(0).getJSONArray("data"),
-                "$mobile_first_open");
-        assertEquals("first", firstOpen.getJSONObject("defaultProperties")
-                .getString("utm_source"));
+        JSONArray data = allCapturedData();
+        assertFalse(find(data, "$mobile_first_open")
+                .getJSONObject("defaultProperties").has("utm_source"));
+        assertEquals("second", find(data, "appointment_booked")
+                .getJSONObject("defaultProperties").getString("utm_source"));
     }
 
     @Test
@@ -398,7 +442,9 @@ public class OursPrivacyIntegrationTest {
                 .getString("visitor_id"));
         assertEquals("stitched", find(data, "$mobile_session_start")
                 .getString("visitor_id"));
-        assertEquals("app", find(data, "$mobile_first_open")
+        assertFalse(find(data, "$mobile_first_open")
+                .getJSONObject("defaultProperties").has("utm_source"));
+        assertEquals("app", find(data, "$deep_link_opened")
                 .getJSONObject("defaultProperties").getString("utm_source"));
     }
 
@@ -568,6 +614,51 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void legacySessionCannotShiftCanonicalPauseTimeOrTimeout() throws Exception {
+        PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
+                .getInternalMutablePackageInfo(mContext.getPackageName());
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putInt(
+                "com.oursprivacy.android.Config.MinimumSessionDuration", 0);
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                new OursPrivacyActivityLifecycleCallbacks(op, OPConfig.getInstance(mContext));
+        callbacks.onActivityResumed(null);
+        clock.advance(10_000);
+        long pausedAt = clock.wall;
+        callbacks.onActivityPaused(null);
+        clock.advance(OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray firstData = allCapturedData();
+        String initialSid = find(firstData, "$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        assertEquals(1, count(firstData, AutomaticEvents.SESSION));
+        JSONObject engagement = find(firstData, "$mobile_session_engagement");
+        assertEquals(10_000, engagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals(MobileSession.utc(pausedAt), engagement
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS
+                - OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY);
+        callbacks.onActivityResumed(null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONArray data = allCapturedData();
+        assertEquals(2, count(data, "$mobile_session_start"));
+        assertNotEquals(initialSid, nth(data, "$mobile_session_start", 1)
+                .getJSONObject("defaultProperties").getString("sid"));
+    }
+
+    @Test
     public void foregroundCheckpointEmitsEngagementWithoutBackground() throws Exception {
         FakeClock clock = new FakeClock();
         OursPrivacyAPI op = newApi(clock, preferences());
@@ -586,6 +677,40 @@ public class OursPrivacyIntegrationTest {
         assertEquals(10_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(0, count(data, "$mobile_session_end"));
+    }
+
+    @Test
+    public void activitySwitchesDoNotRestartForegroundCheckpointDeadline()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                new OursPrivacyActivityLifecycleCallbacks(op, OPConfig.getInstance(mContext));
+        callbacks.onActivityResumed(null);
+        clock.advance(4_000);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4_000));
+        callbacks.onActivityPaused(null);
+        clock.advance(100);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));
+        callbacks.onActivityResumed(null);
+        clock.advance(4_000);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4_000));
+        callbacks.onActivityPaused(null);
+        clock.advance(100);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100));
+        callbacks.onActivityResumed(null);
+        clock.advance(1_800);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1_800));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        assertEquals(1, count(data, "$mobile_session_engagement"));
+        assertEquals(10_000, find(data, "$mobile_session_engagement")
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        assertEquals(1, count(data, "$mobile_app_open"));
     }
 
     @Test

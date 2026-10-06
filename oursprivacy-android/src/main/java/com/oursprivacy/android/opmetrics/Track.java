@@ -45,10 +45,8 @@ final class Track {
     /**
      * Builds the inner data[] element for a {@code track()} call.
      *
-     * {@code eventProperties} is {@code {...defaultEventProperties, ...callerEventProperties}}
-     * (per-call wins). {@code userProperties} runs through {@link #mergeUserProperties} —
-     * default custom/consent bags merge with per-call, with the empty-consent omission rule.
-     * {@code defaultProperties} is the OS/device snapshot overlaid with the attribution bag.
+     * Manual tracks merge caller defaults and attribution. Fixed-ID mobile facts
+     * use only captured event properties and SDK defaults.
      */
     static JSONObject composeTrackEvent(String eventName,
                                         JSONObject eventProperties,
@@ -87,7 +85,7 @@ final class Track {
                 : null;
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
-        mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (fixedDistinctId == null) mergeOnto(defaults, ctx.attributionDefaultProperties);
         if (ctx.mobileSnapshot != null) {
             defaults.remove("app_version");
             defaults.remove("app_build");

@@ -403,7 +403,7 @@ public class OursPrivacyAPI {
     }
 
     synchronized void onBackground() {
-        onBackground(mMobileSession == null ? null : mMobileSession.captureTimePoint());
+        onBackground(mMobileSession == null ? null : mMobileSession.captureTimePoint(), null);
     }
 
     synchronized MobileSession.TimePoint captureMobileTimePoint() {
@@ -411,13 +411,28 @@ public class OursPrivacyAPI {
     }
 
     synchronized void onBackground(MobileSession.TimePoint point) {
+        onBackground(point, null);
+    }
+
+    synchronized void onBackground(MobileSession.TimePoint point,
+                                   JSONObject legacySessionProperties) {
         if (!mInitialized) return;
         if (point == null) {
-            mMobileSession.background();
-        } else {
-            mMobileSession.background(point);
+            point = mMobileSession.captureTimePoint();
         }
+        mMobileSession.background(point);
         drainMobileFacts();
+        if (legacySessionProperties != null && mTrackAutomaticEvents
+                && !mPersistence.getOptOut()) {
+            try {
+                Track.Context context = buildTrackContext(mPersistence.getVisitorId(),
+                        mMobileSession.snapshotAt(point));
+                enqueueTrackItem(Track.composeTrackEvent(AutomaticEvents.SESSION,
+                        legacySessionProperties, null, context));
+            } catch (JSONException e) {
+                OPLog.e(LOGTAG, "Failed to compose legacy session event", e);
+            }
+        }
         if (mConfig != null && mConfig.getFlushOnBackground()) {
             flush();
         }
@@ -468,10 +483,8 @@ public class OursPrivacyAPI {
         if (mMobileSession == null || mPersistence.getOptOut()) return;
         for (MobileSession.MobileFact fact : mMobileSession.pendingFacts()) {
             try {
-                JSONObject attribution = fact.attributionProperties();
                 Track.Context context = buildTrackContext(fact.visitorId(), fact.snapshot(),
-                        attribution == null
-                                ? mPersistence.getAttributionDefaultProperties() : attribution);
+                        new JSONObject());
                 JSONObject item = Track.composeTrackEvent(fact.eventName(),
                         fact.eventProperties(), null, context, fact.id());
                 if (!mPersistence.enqueueMobileFact(mToken, fact.id(), item)) return;
