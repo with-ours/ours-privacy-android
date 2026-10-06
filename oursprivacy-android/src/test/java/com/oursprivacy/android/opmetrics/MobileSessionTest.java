@@ -220,6 +220,32 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void duplicateScreenCallbackKeepsElapsedTimeForPreviousScreen() throws Exception {
+        MobileSession session = session("1.0", "10");
+        session.foreground(true);
+        session.screen("Schedule");
+        clock.advance(2_000);
+        assertTrue(session.screen("Schedule").isEmpty());
+        clock.advance(3_000);
+
+        List<MobileSession.MobileFact> change = session.screen("Visit Details");
+        assertEquals(List.of("$mobile_session_engagement", "$mobile_screen_view"), names(change));
+        assertEquals("Schedule", change.get(0).eventProperties().getString("screen_name"));
+        assertEquals(5_000, change.get(0).eventProperties().getLong("engagement_duration_ms"));
+        assertEquals("Visit Details", change.get(1).eventProperties().getString("screen_name"));
+    }
+
+    @Test
+    public void screenRejectsUnstableLabels() {
+        MobileSession session = session("1.0", "10");
+        for (String label : new String[]{null, "", " visits", "Visits ", "visits/123",
+                "visit?patient=42", "Étage", "A".repeat(81)}) {
+            assertThrows(IllegalArgumentException.class, () -> session.screen(label));
+        }
+        assertEquals(List.of("$mobile_screen_view"), names(session.screen("A".repeat(80))));
+    }
+
+    @Test
     public void screenAfterThirtyMinutesUsesNewSessionAtSnapshotBoundary() {
         MobileSession session = session("1.0", "10");
         String oldSid = session.foreground(true).get(0).snapshot().sid();

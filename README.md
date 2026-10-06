@@ -19,6 +19,7 @@ Privacy-first analytics for Android.
 - [API Reference](#api-reference)
   - [Initialization](#initialization)
   - [Core Tracking](#core-tracking)
+  - [Mobile Screens and Lifecycle](#mobile-screens-and-lifecycle)
   - [Default Properties](#default-properties)
   - [Configuration](#configuration)
   - [Identity](#identity)
@@ -52,7 +53,7 @@ Add permissions to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 ```
 
-**Version 3.0.0 upgrade:** Set your app's `minSdk` to at least 23 (Android 6.0) and `compileSdk` to at least 36. Version 2.0.0 supports API 21.
+**Version 3.0.0 upgrade:** Set your app's `minSdk` to at least 23 (Android 6.0) and `compileSdk` to at least 36. Version 2.0.0 supports API 21. **Current source and builds require Java 17 and `compileSdk` 37 or later** because of the current AndroidX dependencies.
 
 ### 2. Initialize
 
@@ -72,6 +73,7 @@ op.initialize(
 The SDK connects to `https://cdn.oursprivacy.com` by default — no endpoint configuration needed. Every public method is a no-op (with a warning log) until `initialize` has been called.
 
 Hold a single instance for the lifetime of your app — typically on a custom `Application` subclass or in a DI container.
+`trackAutomaticEvents` defaults to `false`; pass `true` to collect lifecycle events. Explicit `trackScreen()` calls work with either setting.
 
 ### 3. Track Events
 
@@ -123,13 +125,16 @@ class MyApplication : Application() {
             "YOUR_API_TOKEN",
             OursPrivacyInitOptions.builder()
                 .trackAutomaticEvents(true)
-                .defaultEventProperties(mapOf("app_version" to BuildConfig.VERSION_NAME))
                 .build()
         )
     }
 
     fun trackPurchase() {
         op.track("Purchase", JSONObject(mapOf("value" to 49.99, "currency" to "USD")))
+    }
+
+    fun onScheduleDestinationShown() {
+        op.trackScreen("Schedule")
     }
 }
 ```
@@ -152,11 +157,11 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 
 | Field | Notes |
 | --- | --- |
-| `trackAutomaticEvents` | Emit built-in lifecycle events (`$app_open`, `$ae_first_open`, `$ae_session`, `$ae_updated`). Default false. |
+| `trackAutomaticEvents` | Emit the canonical `$mobile_*` lifecycle facts and legacy `$app_open` / `$ae_*` lifecycle events. Default false. Does not collect screen names. |
 | `serverURL` | Override the ingest base URL. |
 | `visitorId` | Pre-set a `visitor_id`. Sets `is_manually_set_id: true`. |
 | `initialURL` | Parsed as a deep link on init (UTM + click IDs). Respects opt-out. |
-| `defaultEventProperties` | Merged into every `track()` call. |
+| `defaultEventProperties` | Merged into manual `track()` calls; canonical `$mobile_*` facts omit caller defaults. |
 | `defaultUserCustomProperties` | Merged into `userProperties.custom_properties` on every track + identify. |
 | `defaultUserConsentProperties` | Merged into `userProperties.consent`. Subject to the consent-omission guard documented in [Default Properties](#default-properties). |
 | `optedOutByDefault` | If true and no prior opt-out decision is persisted, opts the user out on first launch. |
@@ -168,6 +173,10 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 #### `void track(String eventName, JSONObject eventProperties, OursPrivacyUserProperties userProperties)`
 
 Fires an event. `eventProperties` end up on the wire under `eventProperties`; `userProperties` get merged with the store-level default user-property bags and end up under `userProperties`.
+
+#### `void trackScreen(String name)`
+
+Queues a `$mobile_screen_view` with `eventProperties.screen_name`. Use a stable developer-chosen destination label of 1–80 characters, starting with an ASCII letter and then containing only ASCII letters, digits, spaces, `_`, or `-`, with no trailing space. Empty names and labels outside those character and length rules throw `IllegalArgumentException`. Integrations must never pass parameterized labels: an alphanumeric value such as `Patient 123` passes character validation but is not a stable screen name. A repeated callback for the active screen does not queue another view.
 
 #### `void identify(OursPrivacyUserProperties userProperties)`
 
@@ -181,9 +190,43 @@ Forces a flush of the event queue. The worker drains in batches (default 50, max
 
 Clears the event queue, the four default-property bags, and rotates `visitor_id`. Preserves the opt-out flag.
 
+### Mobile Screens and Lifecycle
+
+Call `trackScreen()` from your navigation destination callback, using fixed labels instead of route arguments or visible content:
+
+```java
+navController.addOnDestinationChangedListener((controller, destination, arguments) -> {
+    if (destination.getId() == R.id.scheduleFragment) {
+        op.trackScreen("Schedule");
+    } else if (destination.getId() == R.id.visitDetailsFragment) {
+        op.trackScreen("Visit Details");
+    }
+});
+```
+
+For Compose or custom navigation, call the same method when the stable destination changes. Activity transitions alone do not identify those destinations, and this SDK version does not automatically collect screen views. Do not put patient identifiers or other PHI in screen labels.
+
+With `trackAutomaticEvents(true)`, the SDK emits these lifecycle facts:
+
+| Event | When | Event properties |
+| --- | --- | --- |
+| `$mobile_first_open` | First eligible tracked foreground open for this install and token | None |
+| `$mobile_app_open` | Each foreground entry | None |
+| `$mobile_session_start` | First tracked foreground entry in a session | None |
+| `$mobile_session_engagement` | Positive foreground-time checkpoint, screen change, or background | `engagement_duration_ms`; `screen_name` when a tracked screen was active |
+| `$mobile_session_end` | Best effort when a session expires or is explicitly ended | None |
+| `$mobile_app_update` | First tracked open after a previously observed app version/build changes | `previous_app_version`, `previous_app_build` when known |
+| `$mobile_screen_view` | Explicit `trackScreen(name)` call | `screen_name` |
+
+Sessions expire after 30 minutes of inactivity. Engagement durations are integer milliseconds and a screen change assigns the preceding positive delta to the previous screen. Manual `track()` and `trackScreen()` still work when automatic tracking is off. Full `optOutTracking()` suppresses all of them; a later opt-in starts a new session.
+
+Every tracked mobile event carries SDK-owned `defaultProperties`: `sid`, `mobile_session_started_at`, `mobile_occurred_at` (UTC ISO-8601 with milliseconds), `mobile_platform: "android"`, `mobile_contract_version: 1`, and `app_version` / `app_build` when available. `version` remains the SDK version. The SDK does not set top-level `time`. Canonical `$mobile_*` facts omit caller default event/user properties and attribution; manual `track()` events keep them.
+
+During migration, the enabled lifecycle path also emits legacy `$app_open`, `$ae_first_open`, `$ae_session`, and `$ae_updated`. Count the canonical `$mobile_*` events for Mobile Analytics; legacy events have different meanings and no equivalent screen coverage.
+
 ### Default Properties
 
-The SDK maintains three caller-controlled bags merged into every event:
+The SDK maintains three caller-controlled bags merged into manual tracks and identify events:
 
 - **`updateDefaultEventProperties(JSONObject)`** → merged into `eventProperties` on every `track()`.
 - **`updateDefaultUserCustomProperties(JSONObject)`** → merged into `userProperties.custom_properties`.
@@ -218,7 +261,7 @@ Attribution overlays live in `defaultProperties`, not `userProperties`.
 
 ### Privacy Controls
 
-- **`optOutTracking()`** — clears the in-flight queue, wipes the four default-property bags, and persists the opt-out flag. Subsequent `track()` / `identify()` / `flush()` calls are no-ops.
+- **`optOutTracking()`** — clears the in-flight queue, wipes the four default-property bags, and persists the opt-out flag. Subsequent `track()` / `trackScreen()` / `identify()` / `flush()` calls are no-ops.
 - **`optInTracking()`** — clears the opt-out flag and fires `$opt_in`.
 - **`hasOptedOutTracking()`** — current persisted opt-out state.
 
@@ -247,7 +290,14 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
         "device_model": "Pixel 8",
         "screen_width": 1080,
         "screen_height": 2400,
-        "version": "<sdk-version>"
+        "version": "<sdk-version>",
+        "sid": "f6c4e445-5368-4d65-8c47-54099356f561",
+        "mobile_session_started_at": "2026-10-06T12:00:00.000Z",
+        "mobile_occurred_at": "2026-10-06T12:00:05.000Z",
+        "mobile_platform": "android",
+        "mobile_contract_version": 1,
+        "app_version": "2.5.1",
+        "app_build": "42"
       }
     }
   ]
@@ -258,6 +308,7 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
 - `distinct_id` is a fresh UUID per event.
 - `userProperties` is `null` when the caller passes no per-call properties and no default user bags are configured.
 - `eventProperties` is `null` when the merged event-property bag is empty.
+- Mobile occurrence time lives in `defaultProperties.mobile_occurred_at`, not top-level `time`.
 - Unknown fields are dropped server-side.
 
 **Naming**: camelCase at the API surface (`externalId`, `phoneNumber`, `customProperties`); snake_case on the wire (`external_id`, `phone_number`, `custom_properties`).

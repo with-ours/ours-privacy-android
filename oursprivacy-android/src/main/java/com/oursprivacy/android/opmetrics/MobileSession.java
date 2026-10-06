@@ -277,10 +277,11 @@ final class MobileSession {
     }
 
     synchronized List<MobileFact> screen(String name) {
-        if (disabled) return Collections.emptyList();
-        if (name == null || name.isEmpty()) {
-            throw new IllegalArgumentException("screen name is required");
+        if (name == null || !name.matches("^[A-Za-z][A-Za-z0-9 _-]{0,79}$")
+                || name.endsWith(" ")) {
+            throw new IllegalArgumentException("name must be a stable screen label");
         }
+        if (disabled) return Collections.emptyList();
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);

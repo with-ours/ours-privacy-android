@@ -177,6 +177,17 @@ public class OursPrivacyAPI {
         track(eventName, eventProperties, userProperties, false);
     }
 
+    /**
+     * Records a stable screen destination. Call when navigation reaches a new
+     * destination; repeated calls with the same name are ignored.
+     */
+    public synchronized void trackScreen(String name) {
+        if (!requireInitialized("trackScreen")) return;
+        if (mPersistence.getOptOut()) return;
+        mMobileSession.screen(name);
+        drainMobileFacts();
+    }
+
     /** Package-internal track entry — lets the lifecycle callbacks tag $ae_* events as automatic. */
     void track(String eventName, JSONObject eventProperties, boolean isAutomaticEvent) {
         track(eventName, eventProperties, null, isAutomaticEvent);

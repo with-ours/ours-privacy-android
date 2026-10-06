@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNotEquals;
 
@@ -89,6 +90,82 @@ public class OursPrivacyIntegrationTest {
                 CompletableFuture.completedFuture(preferences));
         mInstances.add(op);
         return op;
+    }
+
+    @Test
+    public void explicitScreensQueueOnceAndAssignPriorEngagementBeforeNewView()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .visitorId("stitched-visitor")
+                .initialURL("https://example.test/?utm_source=campaign")
+                .defaultEventProperties(jsonOf("caller_field", "caller-value"))
+                .defaultUserCustomProperties(jsonOf("segment", "test-segment"))
+                .build());
+        op.onForeground();
+        op.trackScreen("Schedule");
+        clock.advance(2_000);
+        op.trackScreen("Schedule");
+        clock.advance(3_000);
+        op.trackScreen("Visit Details");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        assertEquals(2, count(data, "$mobile_screen_view"));
+        assertEquals(1, count(data, "$mobile_session_engagement"));
+        JSONObject first = nth(data, "$mobile_screen_view", 0);
+        JSONObject engagement = find(data, "$mobile_session_engagement");
+        JSONObject second = nth(data, "$mobile_screen_view", 1);
+        assertEquals("Schedule", first.getJSONObject("eventProperties").getString("screen_name"));
+        assertEquals("Schedule", engagement.getJSONObject("eventProperties")
+                .getString("screen_name"));
+        assertEquals(5_000, engagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals("Visit Details", second.getJSONObject("eventProperties")
+                .getString("screen_name"));
+        assertEquals("stitched-visitor", second.getString("visitor_id"));
+        assertEquals(first.getJSONObject("defaultProperties").getString("sid"),
+                second.getJSONObject("defaultProperties").getString("sid"));
+        assertEquals("android", second.getJSONObject("defaultProperties")
+                .getString("mobile_platform"));
+        assertFalse(first.getJSONObject("eventProperties").has("caller_field"));
+        assertTrue(first.isNull("userProperties"));
+        assertFalse(first.getJSONObject("defaultProperties").has("utm_source"));
+        assertTrue(indexOf(data, engagement) < indexOf(data, second));
+    }
+
+    @Test
+    public void explicitScreenWorksWithAutomaticOffButOptOutDropsIt() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.trackScreen("Schedule");
+        assertEquals(1, queuedEventCount("$mobile_screen_view"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONArray data = allCapturedData();
+        assertEquals(1, count(data, "$mobile_screen_view"));
+        assertEquals(0, count(data, "$mobile_app_open"));
+
+        mNetwork.reset();
+        op.optOutTracking();
+        op.trackScreen("Visit Details");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedEventCount("$mobile_screen_view"));
+        assertEquals(0, mNetwork.callCount());
+    }
+
+    @Test
+    public void explicitScreenRejectsEmptyParameterizedAndOverlongLabels() {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        for (String label : new String[]{null, "", " schedule", "Schedule ", "visit/123",
+                "Visit?patient=42", "A".repeat(81)}) {
+            assertThrows(IllegalArgumentException.class, () -> op.trackScreen(label));
+        }
     }
 
     @Test
@@ -931,6 +1008,14 @@ public class OursPrivacyIntegrationTest {
             if (name.equals(data.getJSONObject(i).getString("event"))) found++;
         }
         return found;
+    }
+
+    private static int indexOf(JSONArray data, JSONObject item) throws Exception {
+        for (int i = 0; i < data.length(); i++) {
+            if (item.getString("distinct_id")
+                    .equals(data.getJSONObject(i).getString("distinct_id"))) return i;
+        }
+        throw new AssertionError("missing item");
     }
 
     private static JSONObject find(JSONArray data, String name) throws Exception {
