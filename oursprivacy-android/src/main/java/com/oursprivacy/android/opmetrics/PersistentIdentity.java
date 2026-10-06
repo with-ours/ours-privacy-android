@@ -365,6 +365,7 @@ import java.util.concurrent.Future;
         editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
         clearMobileSessions(editor, retainedKey);
         clearHeldTracks(editor);
+        if (mOptOut != null) editor.putBoolean(KEY_OPT_OUT, mOptOut);
         if (!editor.commit()) {
             mOptOut = true;
             throw new IllegalStateException("Failed to persist reset");

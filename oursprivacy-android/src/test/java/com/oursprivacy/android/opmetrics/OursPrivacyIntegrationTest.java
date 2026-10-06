@@ -1688,6 +1688,49 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void resetAfterFailedOptOutPreservesConsentAndDiscardsPendingEventsOnRestart()
+            throws Exception {
+        AtomicBoolean failFactTransfer = new AtomicBoolean();
+        AtomicBoolean failClearCommit = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithDeferredHeldClear(
+                preferencesWithQueueCommitFailure(failFactTransfer), failClearCommit);
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI first = newApi(clock, wrapped);
+        first.initialize(TOKEN, options);
+        first.optOutTracking();
+        first.optInTracking();
+        first.track("queued_before_opt_out");
+        failFactTransfer.set(true);
+        first.onForeground();
+        first.track("appointment_booked", jsonOf("appointment_id", "held-before-opt-out"));
+        assertEquals(1, queuedEventCount("queued_before_opt_out"));
+        assertEquals(1, heldEventCount("appointment_booked"));
+        assertFalse(preferences().getBoolean("opt_out", true));
+
+        failClearCommit.set(true);
+        assertThrows(IllegalStateException.class, first::optOutTracking);
+        assertTrue(first.hasOptedOutTracking());
+        failClearCommit.set(false);
+        first.reset();
+        assertEquals(0, queuedCount());
+        assertEquals(0, heldTracks().length());
+        first.shutdownForTests();
+
+        failFactTransfer.set(false);
+        OursPrivacyAPI restarted = newApi(clock, wrapped);
+        restarted.initialize(TOKEN, options);
+        assertTrue(restarted.hasOptedOutTracking());
+        restarted.track("after_restart");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        assertEquals(0, heldTracks().length());
+        assertEquals(0, mNetwork.callCount());
+    }
+
+    @Test
     public void failedLegacyBackgroundJournalWriteDoesNotEscapeActivityCallback()
             throws Exception {
         PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
