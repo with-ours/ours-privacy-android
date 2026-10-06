@@ -351,18 +351,23 @@ import java.util.concurrent.Future;
         mEventQueue = new JSONArray();
         mQueueGeneration = UUID.randomUUID().toString();
         final SharedPreferences.Editor editor = editor();
-        if (editor != null) {
-            editor.putString(KEY_VISITOR_ID, mVisitorId);
-            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
-            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
-            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
-            editor.remove(KEY_EVENT_QUEUE);
-            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
-            clearMobileSessions(editor, retainedKey);
-            clearHeldTracks(editor);
-            editor.apply();
+        if (editor == null) {
+            mOptOut = true;
+            throw new IllegalStateException("SharedPreferences unavailable");
+        }
+        editor.putString(KEY_VISITOR_ID, mVisitorId);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        editor.remove(KEY_EVENT_QUEUE);
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+        clearMobileSessions(editor, retainedKey);
+        clearHeldTracks(editor);
+        if (!editor.commit()) {
+            mOptOut = true;
+            throw new IllegalStateException("Failed to persist reset");
         }
     }
 
@@ -383,20 +388,19 @@ import java.util.concurrent.Future;
         mQueueGeneration = UUID.randomUUID().toString();
         mOptOut = true;
         final SharedPreferences.Editor editor = editor();
-        if (editor != null) {
-            editor.putString(KEY_VISITOR_ID, mVisitorId);
-            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
-            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
-            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
-            editor.remove(KEY_EVENT_QUEUE);
-            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
-            clearMobileSessions(editor, null);
-            clearHeldTracks(editor);
-            editor.putBoolean(KEY_OPT_OUT, true);
-            editor.apply();
-        }
+        if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
+        editor.putString(KEY_VISITOR_ID, mVisitorId);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        editor.remove(KEY_EVENT_QUEUE);
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+        clearMobileSessions(editor, null);
+        clearHeldTracks(editor);
+        editor.putBoolean(KEY_OPT_OUT, true);
+        if (!editor.commit()) throw new IllegalStateException("Failed to persist opt-out");
     }
 
     static final class MobileState {

@@ -1501,6 +1501,16 @@ public class OursPrivacyIntegrationTest {
         return new JSONArray();
     }
 
+    private int heldEventCount(String eventName) throws Exception {
+        JSONArray held = heldTracks();
+        int count = 0;
+        for (int i = 0; i < held.length(); i++) {
+            JSONObject item = held.getJSONObject(i).getJSONObject("item");
+            if (eventName.equals(item.optString("event"))) count++;
+        }
+        return count;
+    }
+
     @Test
     public void failedHeldQueueCommitRetriesAfterRecreationWithoutDuplicatingItems()
             throws Exception {
@@ -1596,6 +1606,120 @@ public class OursPrivacyIntegrationTest {
         failFactTransfer.set(false);
         op.flush();
         assertEquals(0, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
+    public void optOutClearSurvivesRestartWhenApplyCanBeLost() throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failFactTransfer = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithDeferredHeldClear(
+                preferencesWithQueueCommitFailure(failFactTransfer), new AtomicBoolean());
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI first = newApi(clock, wrapped);
+        first.initialize(TOKEN, options);
+        first.optOutTracking();
+        ReflectionHelpers.<OursPrivacyActivityLifecycleCallbacks>getField(
+                first, "mLifecycleCallbacks").onActivityResumed(null);
+        failFactTransfer.set(true);
+        first.optInTracking();
+        first.track("appointment_booked", jsonOf("appointment_id", "forget-on-opt-out"));
+        assertEquals(2, heldTracks().length());
+
+        first.optOutTracking();
+        first.shutdownForTests();
+        failFactTransfer.set(false);
+        OursPrivacyAPI restarted = newApi(clock, wrapped);
+        restarted.initialize(TOKEN, options);
+        assertTrue(restarted.hasOptedOutTracking());
+        assertEquals(0, heldTracks().length());
+        assertEquals(0, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
+    public void resetClearSurvivesRestartWhenApplyCanBeLost() throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failFactTransfer = new AtomicBoolean(true);
+        SharedPreferences wrapped = preferencesWithDeferredHeldClear(
+                preferencesWithQueueCommitFailure(failFactTransfer), new AtomicBoolean());
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI first = newApi(clock, wrapped);
+        first.initialize(TOKEN, options);
+        first.onForeground();
+        first.track("appointment_booked", jsonOf("appointment_id", "forget-on-reset"));
+        assertEquals(1, heldEventCount("appointment_booked"));
+
+        first.reset();
+        first.shutdownForTests();
+        failFactTransfer.set(false);
+        OursPrivacyAPI restarted = newApi(clock, wrapped);
+        restarted.initialize(TOKEN, options);
+        assertEquals(0, heldTracks().length());
+        assertEquals(0, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
+    public void failedOptOutClearReportsFailureAndSuppressesTrackingInMemory() throws Exception {
+        AtomicBoolean failFactTransfer = new AtomicBoolean(true);
+        AtomicBoolean failClearCommit = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithDeferredHeldClear(
+                preferencesWithQueueCommitFailure(failFactTransfer), failClearCommit);
+        OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.onForeground();
+        op.track("appointment_booked", jsonOf("appointment_id", "pending"));
+        assertEquals(1, heldEventCount("appointment_booked"));
+        failClearCommit.set(true);
+
+        assertThrows(IllegalStateException.class, op::optOutTracking);
+        assertTrue(op.hasOptedOutTracking());
+        op.track("after_failed_opt_out");
+        assertEquals(0, queuedEventCount("after_failed_opt_out"));
+        assertThrows(IllegalStateException.class, op::optInTracking);
+        assertTrue(op.hasOptedOutTracking());
+
+        failClearCommit.set(false);
+        failFactTransfer.set(false);
+        op.optInTracking();
+        assertFalse(op.hasOptedOutTracking());
+        assertEquals(0, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
+    public void failedLegacyBackgroundJournalWriteDoesNotEscapeActivityCallback()
+            throws Exception {
+        PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
+                .getInternalMutablePackageInfo(mContext.getPackageName());
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putInt(
+                "com.oursprivacy.android.Config.MinimumSessionDuration", 0);
+        AtomicBoolean failHeldWrite = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferencesWithHeldFailures(
+                new AtomicBoolean(), failHeldWrite, new AtomicBoolean()));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                new OursPrivacyActivityLifecycleCallbacks(op, OPConfig.getInstance(mContext));
+        callbacks.onActivityResumed(null);
+        clock.advance(1_000);
+        failHeldWrite.set(true);
+        callbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        assertEquals(0, queuedEventCount(AutomaticEvents.SESSION));
+
+        failHeldWrite.set(false);
+        callbacks.onActivityResumed(null);
+        clock.advance(1_000);
+        callbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        assertEquals(1, queuedEventCount(AutomaticEvents.SESSION));
     }
 
     @Test
@@ -2169,6 +2293,35 @@ public class OursPrivacyIntegrationTest {
         });
     }
 
+    private SharedPreferences preferencesWithDeferredHeldClear(
+            SharedPreferences backing, AtomicBoolean failClearCommit) {
+        return (SharedPreferences) Proxy.newProxyInstance(
+                SharedPreferences.class.getClassLoader(),
+                new Class<?>[]{SharedPreferences.class}, (prefsProxy, prefsMethod, prefsArgs) -> {
+            if (!"edit".equals(prefsMethod.getName())) {
+                return prefsMethod.invoke(backing, prefsArgs);
+            }
+            SharedPreferences.Editor delegate = backing.edit();
+            AtomicBoolean heldClear = new AtomicBoolean();
+            return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
+                    new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
+                        if ("remove".equals(method.getName())
+                                && ((String) args[0]).startsWith("held_tracks_")) {
+                            heldClear.set(true);
+                        }
+                        if (heldClear.get() && "apply".equals(method.getName())) {
+                            return null;
+                        }
+                        if (heldClear.get() && "commit".equals(method.getName())
+                                && failClearCommit.get()) {
+                            return false;
+                        }
+                        Object result = method.invoke(delegate, args);
+                        return result == delegate ? proxy : result;
+                    });
+        });
+    }
+
     private SharedPreferences preferencesWithFailingCommits(
             AtomicBoolean failMobileCommit, AtomicBoolean failQueueCommit) {
         SharedPreferences wrapped = spy(preferences());
@@ -2176,6 +2329,7 @@ public class OursPrivacyIntegrationTest {
             SharedPreferences.Editor delegate = preferences().edit();
             AtomicBoolean mobileEdit = new AtomicBoolean();
             AtomicBoolean queueEdit = new AtomicBoolean();
+            AtomicBoolean clearEdit = new AtomicBoolean();
             return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
                     new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
                         if ("putString".equals(method.getName())) {
@@ -2183,9 +2337,12 @@ public class OursPrivacyIntegrationTest {
                             if (key.startsWith("mobile_session_")) mobileEdit.set(true);
                             if ("event_queue".equals(key)) queueEdit.set(true);
                         }
+                        if ("remove".equals(method.getName())
+                                && "event_queue".equals(args[0])) clearEdit.set(true);
                         Object result = method.invoke(delegate, args);
                         if ("commit".equals(method.getName())
-                                && (mobileEdit.get() && failMobileCommit.get()
+                                && (mobileEdit.get() && !clearEdit.get()
+                                && failMobileCommit.get()
                                 || queueEdit.get() && failQueueCommit.get())) {
                             return false;
                         }
@@ -2206,7 +2363,8 @@ public class OursPrivacyIntegrationTest {
                         if ("putString".equals(method.getName()) && "visitor_id".equals(args[0])) {
                             identityEdit.set(true);
                         }
-                        if ("apply".equals(method.getName()) && identityEdit.get()
+                        if (("apply".equals(method.getName())
+                                || "commit".equals(method.getName())) && identityEdit.get()
                                 && delay.getAndSet(false)) {
                             clock.advance(5_000);
                         }

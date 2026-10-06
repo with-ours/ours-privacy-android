@@ -53,6 +53,7 @@ public class OursPrivacyAPI {
     private String mToken;
     private boolean mTrackAutomaticEvents;
     private boolean mTrackAutomaticCrashes;
+    private boolean mPrivacyClearFailed;
     private OPConfig mConfig;
     private PersistentIdentity mPersistence;
     private AnalyticsMessages mMessages;
@@ -320,12 +321,23 @@ public class OursPrivacyAPI {
         // Pending events are discarded — the visitor explicitly asked to stop
         // being tracked. visitor_id rotates inside optOutAndClear so a later
         // opt-in starts with a fresh identity.
-        mPersistence.optOutAndClear();
-        mMobileSession.disable();
+        try {
+            mPersistence.optOutAndClear();
+            mPrivacyClearFailed = false;
+        } catch (IllegalStateException e) {
+            mPrivacyClearFailed = true;
+            throw e;
+        } finally {
+            mMobileSession.disable();
+        }
     }
 
     public synchronized void optInTracking() {
         if (!requireInitialized("optInTracking")) return;
+        if (mPrivacyClearFailed) {
+            mPersistence.optOutAndClear();
+            mPrivacyClearFailed = false;
+        }
         mPersistence.setOptOut(false);
         mMobileSession.enable();
         if (mTrackAutomaticEvents && mLifecycleCallbacks != null
@@ -387,7 +399,14 @@ public class OursPrivacyAPI {
         // persistence is wiped on the calling thread.
         mMessages.flushNow();
         mMobileSession.rotate();
-        mPersistence.resetPreservingMobileSession(mToken);
+        try {
+            mPersistence.resetPreservingMobileSession(mToken);
+            mPrivacyClearFailed = false;
+        } catch (IllegalStateException e) {
+            mPrivacyClearFailed = true;
+            mMobileSession.disable();
+            throw e;
+        }
         mMobileSession.continueAfterIdentityChange();
         drainMobileFacts();
     }
@@ -458,8 +477,8 @@ public class OursPrivacyAPI {
                         mMobileSession.snapshotAt(point));
                 enqueueTrackItem(Track.composeTrackEvent(AutomaticEvents.SESSION,
                         legacySessionProperties, null, context));
-            } catch (JSONException e) {
-                OPLog.e(LOGTAG, "Failed to compose legacy session event", e);
+            } catch (JSONException | IllegalStateException e) {
+                OPLog.e(LOGTAG, "Failed to record legacy session event", e);
             }
         }
         if (mConfig != null && mConfig.getFlushOnBackground()) {
