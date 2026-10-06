@@ -25,6 +25,9 @@ import java.util.concurrent.Future;
  */
 @SuppressLint("CommitPrefEdits")
 /* package */ final class PersistentIdentity {
+    interface WallClock {
+        long wallMillis();
+    }
 
     private static final String KEY_VISITOR_ID = "visitor_id";
     private static final String KEY_IS_MANUALLY_SET_ID = "is_manually_set_id";
@@ -37,6 +40,7 @@ import java.util.concurrent.Future;
     private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
 
     private final Future<SharedPreferences> mPrefsLoader;
+    private final WallClock mWallClock;
 
     private boolean mLoaded = false;
     private String mVisitorId;
@@ -51,7 +55,12 @@ import java.util.concurrent.Future;
     private JSONArray mEventQueue = new JSONArray();
 
     PersistentIdentity(Future<SharedPreferences> prefsLoader) {
+        this(prefsLoader, System::currentTimeMillis);
+    }
+
+    PersistentIdentity(Future<SharedPreferences> prefsLoader, WallClock wallClock) {
         mPrefsLoader = prefsLoader;
+        mWallClock = wallClock;
     }
 
     // ---------- visitor_id ----------
@@ -311,6 +320,10 @@ import java.util.concurrent.Future;
             }
         }
         if (pending == null) return false;
+        if (index != 0 || pending.optLong("occurred_at") - mWallClock.wallMillis()
+                > MobileSession.MAX_FUTURE_MS) {
+            return false;
+        }
         final String previousState = encodeMobileState(state);
         final String previousQueue = mEventQueue.toString();
         JSONObject defaults = event == null ? null : event.optJSONObject("defaultProperties");

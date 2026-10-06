@@ -39,8 +39,9 @@ public class MobileSessionTest {
         preferences = ApplicationProvider.getApplicationContext()
                 .getSharedPreferences("mobile-session-test", Context.MODE_PRIVATE);
         preferences.edit().clear().commit();
-        identity = new PersistentIdentity(CompletableFuture.completedFuture(preferences));
         clock = new FakeClock(1_780_000_000_000L);
+        identity = new PersistentIdentity(CompletableFuture.completedFuture(preferences),
+                clock::wallMillis);
     }
 
     @Test
@@ -465,6 +466,45 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void largeWallRollbackOnBackgroundRetainsPriorForegroundEngagement()
+            throws Exception {
+        MobileSession session = session("1.0", "10");
+        String oldSid = session.foreground(true).get(0).snapshot().sid();
+        String visitor = identity.getVisitorId();
+        clock.elapsed += 12_000;
+        clock.wall -= 10 * 60_000;
+
+        List<MobileSession.MobileFact> facts = session.background();
+        assertEquals(List.of("$mobile_session_engagement", "$mobile_session_start"),
+                names(facts));
+        assertEquals(12_000, facts.get(0).eventProperties()
+                .getLong("engagement_duration_ms"));
+        assertEquals(oldSid, facts.get(0).snapshot().sid());
+        assertEquals(visitor, facts.get(0).visitorId());
+        assertNotEquals(oldSid, facts.get(1).snapshot().sid());
+        assertTrue(session.background().isEmpty());
+        clock.advance(6 * 60_000);
+        assertEquals(facts.get(0).id(), session.pendingFacts().get(3).id());
+    }
+
+    @Test
+    public void largeWallRollbackOnIdentityRotationRetainsPriorForegroundEngagement()
+            throws Exception {
+        MobileSession session = session("1.0", "10");
+        String oldSid = session.foreground(true).get(0).snapshot().sid();
+        clock.elapsed += 12_000;
+        clock.wall -= 10 * 60_000;
+
+        List<MobileSession.MobileFact> facts = session.rotate();
+        assertEquals(List.of("$mobile_session_engagement", "$mobile_session_end"),
+                names(facts));
+        assertEquals(12_000, facts.get(0).eventProperties()
+                .getLong("engagement_duration_ms"));
+        assertEquals(oldSid, facts.get(0).snapshot().sid());
+        assertNotEquals(oldSid, session.snapshot().sid());
+    }
+
+    @Test
     public void futurePendingFactHoldsLaterFactsUntilEarlierFactsCanQueue() {
         MobileSession session = session("1.0", "10");
         session.foreground(true);
@@ -475,6 +515,31 @@ public class MobileSessionTest {
         assertTrue(session.pendingFacts().isEmpty());
         clock.advance(5 * 60_000);
         assertEquals(firstId, session.pendingFacts().get(0).id());
+    }
+
+    @Test
+    public void factFetchedBeforeRollbackCannotQueueUntilItsCapturedTimeIsEligible()
+            throws Exception {
+        MobileSession session = session("1.0", "10");
+        session.foreground(true);
+        MobileSession.MobileFact fetched = session.pendingFacts().get(0);
+        long occurredAt = fetched.snapshot().occurredAtMillis();
+        clock.wall -= 10 * 60_000;
+
+        assertTrue(session.pendingFacts().isEmpty());
+        assertFalse(identity.enqueueMobileFact(TOKEN, fetched.id(), queued(fetched)));
+        assertEquals(0, identity.getQueueSize());
+        assertFalse(identity.getMobileState(TOKEN).firstOpenAccepted);
+        assertEquals(fetched.id(), identity.getMobileState(TOKEN).pendingFacts
+                .getJSONObject(0).getString("id"));
+
+        clock.advance(6 * 60_000);
+        assertTrue(identity.enqueueMobileFact(TOKEN, fetched.id(), queued(fetched)));
+        assertTrue(identity.getMobileState(TOKEN).firstOpenAccepted);
+        JSONObject queued = identity.getQueueSnapshot().getJSONObject(0);
+        assertEquals(fetched.id(), queued.getString("distinct_id"));
+        assertEquals(MobileSession.utc(occurredAt), queued.getJSONObject("defaultProperties")
+                .getString("mobile_occurred_at"));
     }
 
     @Test
@@ -568,8 +633,8 @@ public class MobileSessionTest {
 
     private void acceptFirstOpen(MobileSession session) {
         for (MobileSession.MobileFact fact : session.pendingFacts()) {
+            assertTrue(identity.enqueueMobileFact(TOKEN, fact.id(), queued(fact)));
             if ("$mobile_first_open".equals(fact.eventName())) {
-                assertTrue(identity.enqueueMobileFact(TOKEN, fact.id(), queued(fact)));
                 return;
             }
         }
@@ -595,7 +660,8 @@ public class MobileSessionTest {
     }
 
     private MobileSession recreated(String version, String build) {
-        identity = new PersistentIdentity(CompletableFuture.completedFuture(preferences));
+        identity = new PersistentIdentity(CompletableFuture.completedFuture(preferences),
+                clock::wallMillis);
         return session(version, build);
     }
 

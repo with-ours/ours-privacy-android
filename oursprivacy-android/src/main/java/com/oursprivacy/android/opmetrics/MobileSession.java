@@ -206,9 +206,10 @@ final class MobileSession {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         long nowWall = clock.wallMillis();
+        long nowElapsed = clock.elapsedMillis();
         List<MobileFact> facts = new ArrayList<>();
-        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
-        accrue(state, clock.elapsedMillis());
+        reconcileClock(state, nowWall, nowElapsed, facts, true);
+        accrue(state, nowElapsed);
         emitEngagement(state, nowWall, facts);
         state.lastActive = Math.max(state.lastActive, nowWall);
         persistFacts(state, facts);
@@ -221,9 +222,10 @@ final class MobileSession {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         long nowWall = clock.wallMillis();
+        long nowElapsed = clock.elapsedMillis();
         List<MobileFact> facts = new ArrayList<>();
-        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
-        accrue(state, clock.elapsedMillis());
+        reconcileClock(state, nowWall, nowElapsed, facts, true);
+        accrue(state, nowElapsed);
         if (state.accumulatedMs >= ENGAGEMENT_THRESHOLD_MS) {
             emitEngagement(state, nowWall, facts);
         }
@@ -238,9 +240,10 @@ final class MobileSession {
             throw new IllegalArgumentException("screen name is required");
         }
         long nowWall = clock.wallMillis();
+        long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         List<MobileFact> facts = new ArrayList<>();
-        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        reconcileClock(state, nowWall, nowElapsed, facts, true);
         boolean expired = state.sid != null && !foreground
                 && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
         if (!expired && name.equals(activeScreen)) return Collections.emptyList();
@@ -251,7 +254,7 @@ final class MobileSession {
             startNew(state, nowWall);
             activeScreen = null;
         }
-        if (foreground) accrue(state, clock.elapsedMillis());
+        if (foreground) accrue(state, nowElapsed);
         emitEngagement(state, nowWall, facts);
         activeScreen = name;
         state.lastActive = Math.max(state.lastActive, nowWall);
@@ -265,9 +268,10 @@ final class MobileSession {
     synchronized MobileSnapshot snapshot() {
         if (disabled) return null;
         long nowWall = clock.wallMillis();
+        long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         List<MobileFact> facts = new ArrayList<>();
-        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        reconcileClock(state, nowWall, nowElapsed, facts, true);
         boolean expired = state.sid != null && !foreground
                 && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
         if (expired && automatic) {
@@ -288,11 +292,15 @@ final class MobileSession {
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         if (clockInvalid(state, nowWall)) {
+            List<MobileFact> facts = new ArrayList<>();
+            if (foreground) accrue(state, nowElapsed);
+            emitEngagement(state, nowWall, facts);
+            if (automatic) facts.add(fact("$mobile_session_end", state, nowWall, null));
             startNew(state, nowWall);
             activeSinceElapsed = nowElapsed;
             activeScreen = null;
-            identity.saveMobileState(token, state);
-            return Collections.emptyList();
+            persistFacts(state, facts);
+            return immutable(facts);
         }
         if (foreground) accrue(state, nowElapsed);
         List<MobileFact> facts = new ArrayList<>();
@@ -351,6 +359,10 @@ final class MobileSession {
     private boolean reconcileClock(PersistentIdentity.MobileState state, long nowWall,
                                    long nowElapsed, List<MobileFact> facts, boolean startFact) {
         if (!clockInvalid(state, nowWall)) return false;
+        if (foreground) {
+            accrue(state, nowElapsed);
+            emitEngagement(state, nowWall, facts);
+        }
         startNew(state, nowWall);
         activeSinceElapsed = nowElapsed;
         activeScreen = null;
