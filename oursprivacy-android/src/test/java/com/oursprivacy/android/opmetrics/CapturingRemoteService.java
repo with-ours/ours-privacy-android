@@ -15,6 +15,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import javax.net.ssl.SSLSocketFactory;
 
@@ -27,6 +29,8 @@ final class CapturingRemoteService implements RemoteService {
     private final List<String> mEndpoints = Collections.synchronizedList(new ArrayList<>());
     private final List<String> mBodies = Collections.synchronizedList(new ArrayList<>());
     private final ArrayDeque<Object> mResponses = new ArrayDeque<>();
+    private CountDownLatch mRequestCaptured;
+    private CountDownLatch mReleaseRequest;
 
     @Override
     public boolean isOnline(Context context, OfflineMode offlineMode) {
@@ -48,6 +52,25 @@ final class CapturingRemoteService implements RemoteService {
         synchronized (mResponses) {
             next = mResponses.pollFirst();
         }
+        CountDownLatch captured;
+        CountDownLatch release;
+        synchronized (this) {
+            captured = mRequestCaptured;
+            release = mReleaseRequest;
+            mRequestCaptured = null;
+            mReleaseRequest = null;
+        }
+        if (captured != null) {
+            captured.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("Timed out waiting to release captured request");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while holding captured request", e);
+            }
+        }
         if (next instanceof IOException) throw (IOException) next;
         return ((String) (next == null
                 ? "{\"success\":true,\"visitor_id\":\"test-visitor\"}" : next))
@@ -60,6 +83,11 @@ final class CapturingRemoteService implements RemoteService {
 
     void failWith(IOException failure) {
         synchronized (mResponses) { mResponses.addLast(failure); }
+    }
+
+    synchronized void blockNextRequest(CountDownLatch captured, CountDownLatch release) {
+        mRequestCaptured = captured;
+        mReleaseRequest = release;
     }
 
     /** Snapshot of every captured body, in POST order. */

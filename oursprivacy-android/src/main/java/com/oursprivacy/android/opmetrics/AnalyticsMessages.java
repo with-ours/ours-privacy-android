@@ -232,11 +232,11 @@ import java.util.concurrent.TimeUnit;
 
             final int batchSize = mConfig.getFlushBatchSize();
             while (mPersistence.getQueueSize() > 0) {
-                final JSONArray snapshot = mPersistence.getQueueSnapshot();
-                final int take = Math.min(batchSize, snapshot.length());
+                final PersistentIdentity.QueueSnapshot snapshot = mPersistence.getQueueSnapshotForFlush();
+                final int take = Math.min(batchSize, snapshot.events.length());
                 final JSONArray batch = new JSONArray();
                 for (int i = 0; i < take; i++) {
-                    batch.put(snapshot.opt(i));
+                    batch.put(snapshot.events.opt(i));
                 }
 
                 final String body;
@@ -266,8 +266,9 @@ import java.util.concurrent.TimeUnit;
                         OPLog.w(LOGTAG, "Invalid ingest response; will retry batch");
                         return;
                     }
-                    if (!mPersistence.acknowledgeBatch(mToken, take, acknowledgment.indexed)) {
-                        OPLog.w(LOGTAG, "Failed to persist ingest acknowledgment; will retry batch");
+                    if (!mPersistence.acknowledgeBatch(mToken, snapshot, take,
+                            acknowledgment.indexed)) {
+                        OPLog.w(LOGTAG, "Ingest acknowledgment not applied; will retry batch");
                         return;
                     }
                     if (mRejectionListener != null) {

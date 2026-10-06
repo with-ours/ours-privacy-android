@@ -34,6 +34,8 @@ import java.util.List;
 import java.util.Set;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Proxy;
@@ -941,6 +943,8 @@ public class OursPrivacyIntegrationTest {
         String oldVisitor = op.getVisitorId();
         String oldSid = queuedEvent("$mobile_first_open")
                 .getJSONObject("defaultProperties").getString("sid");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         clock.advance(3_000);
         delayIdentity.set(true);
         op.reset();
@@ -1171,6 +1175,115 @@ public class OursPrivacyIntegrationTest {
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         assertEquals(0, queuedCount());
         assertTrue(rejections.isEmpty());
+    }
+
+    @Test
+    public void resetDuringIndexedPostCannotAcknowledgeSameLengthNewSessionFacts()
+            throws Exception {
+        List<String> rejections = new ArrayList<>();
+        OursPrivacyAPI op = newApi(new FakeClock(), preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .onIngestRejected((id, code) -> rejections.add(code))
+                .build());
+        op.onForeground();
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        mNetwork.reset();
+        op.setFlushBatchSize(2);
+
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\",\"accepted\":1,"
+                + "\"rejected\":[{\"index\":0,\"code\":\"old_rejected\"}]}");
+        mNetwork.failWith(new IOException("hold replacement"));
+        mNetwork.blockNextRequest(captured, release);
+        try {
+            op.track("old_one");
+            op.track("old_two");
+            op.flush();
+            assertTrue("old POST captured", captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertEquals(2, mNetwork.bodyAt(0).getJSONArray("data").length());
+
+            op.reset();
+            JSONArray replacement = new JSONArray(preferences().getString("event_queue", "[]"));
+            assertEquals(2, replacement.length());
+            assertEquals(1, count(replacement, "$mobile_session_start"));
+
+            release.countDown();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(2, queuedCount());
+            assertEquals(1, count(new JSONArray(preferences()
+                    .getString("event_queue", "[]")), "$mobile_session_start"));
+            assertTrue(rejections.isEmpty());
+            assertEquals(2, mNetwork.callCount());
+
+            mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\"}");
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(0, queuedCount());
+            assertEquals(3, mNetwork.callCount());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    public void resetDuringPostCannotAcknowledgeReusedCallerDistinctId() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":1,\"rejected\":[]}");
+        mNetwork.failWith(new IOException("hold replacement"));
+        mNetwork.blockNextRequest(captured, release);
+        try {
+            op.track("same_event", jsonOf("$distinct_id", "caller-id"));
+            op.flush();
+            assertTrue(captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertEquals("caller-id", mNetwork.bodyAt(0).getJSONArray("data")
+                    .getJSONObject(0).getString("distinct_id"));
+
+            op.reset();
+            op.track("same_event", jsonOf("$distinct_id", "caller-id"));
+            assertEquals(1, queuedCount());
+            assertEquals("caller-id", queuedEvent("same_event").getString("distinct_id"));
+
+            release.countDown();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(1, queuedCount());
+            assertEquals(2, mNetwork.callCount());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    public void appendedEventDoesNotInvalidateSentQueueHead() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":1,\"rejected\":[]}");
+        mNetwork.failWith(new IOException("hold appended event"));
+        mNetwork.blockNextRequest(captured, release);
+        try {
+            op.track("sent_event");
+            op.flush();
+            assertTrue(captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+
+            op.track("appended_event");
+            release.countDown();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(1, queuedCount());
+            assertEquals("appended_event", queuedEvent("appended_event").getString("event"));
+            assertEquals(2, mNetwork.callCount());
+        } finally {
+            release.countDown();
+        }
     }
 
     private int queuedCount() throws Exception {

@@ -37,6 +37,7 @@ import java.util.concurrent.Future;
     private static final String KEY_DEFAULT_USER_CONSENT_PROPERTIES = "default_user_consent_properties";
     private static final String KEY_ATTRIBUTION_DEFAULT_PROPERTIES = "attribution_default_properties";
     private static final String KEY_EVENT_QUEUE = "event_queue";
+    private static final String KEY_EVENT_QUEUE_GENERATION = "event_queue_generation";
     private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
     private static final String KEY_INDEXED_INGEST_PREFIX = "indexed_ingest_";
 
@@ -54,6 +55,7 @@ import java.util.concurrent.Future;
     private JSONObject mAttributionDefaultProperties = new JSONObject();
 
     private JSONArray mEventQueue = new JSONArray();
+    private String mQueueGeneration = UUID.randomUUID().toString();
 
     PersistentIdentity(Future<SharedPreferences> prefsLoader) {
         this(prefsLoader, System::currentTimeMillis);
@@ -171,36 +173,77 @@ import java.util.concurrent.Future;
         return copyArray(mEventQueue);
     }
 
+    static final class QueueSnapshot {
+        final JSONArray events;
+        final String generation;
+
+        QueueSnapshot(JSONArray events, String generation) {
+            this.events = events;
+            this.generation = generation;
+        }
+    }
+
+    synchronized QueueSnapshot getQueueSnapshotForFlush() {
+        ensureLoaded();
+        try {
+            return new QueueSnapshot(new JSONArray(mEventQueue.toString()), mQueueGeneration);
+        } catch (JSONException e) {
+            throw new IllegalStateException("Queued events are not valid JSON", e);
+        }
+    }
+
     synchronized boolean hasIndexedIngestMode(String token) {
         ensureLoaded();
         SharedPreferences prefs = preferences();
         return prefs != null && prefs.getBoolean(indexedIngestKey(token), false);
     }
 
-    synchronized boolean acknowledgeBatch(String token, int count, boolean indexed) {
+    synchronized boolean acknowledgeBatch(String token, QueueSnapshot sent,
+                                          int count, boolean indexed) {
         ensureLoaded();
-        if (count <= 0 || count > mEventQueue.length()) return false;
+        if (count <= 0 || count > mEventQueue.length()
+                || count > sent.events.length()
+                || !sent.generation.equals(mQueueGeneration)) return false;
         final SharedPreferences prefs = preferences();
         if (prefs == null) return false;
+        if (!sent.generation.equals(prefs.getString(KEY_EVENT_QUEUE_GENERATION, null))
+                || !matchesHead(mEventQueue, sent.events, count)
+                || !matchesHead(readJsonArray(prefs, KEY_EVENT_QUEUE), sent.events, count)) {
+            return false;
+        }
         final String indexedKey = indexedIngestKey(token);
         final String previousQueue = mEventQueue.toString();
         final boolean wasIndexed = prefs.getBoolean(indexedKey, false);
+        final String nextGeneration = UUID.randomUUID().toString();
         final JSONArray next = new JSONArray();
         for (int i = count; i < mEventQueue.length(); i++) {
             next.put(mEventQueue.opt(i));
         }
         final SharedPreferences.Editor editor = prefs.edit();
         editor.putString(KEY_EVENT_QUEUE, next.toString());
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, nextGeneration);
         if (indexed) editor.putBoolean(indexedKey, true);
         if (!editor.commit()) {
             final SharedPreferences.Editor rollback = prefs.edit();
             rollback.putString(KEY_EVENT_QUEUE, previousQueue);
+            rollback.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             if (wasIndexed) rollback.putBoolean(indexedKey, true);
             else rollback.remove(indexedKey);
             rollback.commit();
             return false;
         }
         mEventQueue = next;
+        mQueueGeneration = nextGeneration;
+        return true;
+    }
+
+    private static boolean matchesHead(JSONArray current, JSONArray sent, int count) {
+        if (current.length() < count || sent.length() < count) return false;
+        for (int i = 0; i < count; i++) {
+            if (!String.valueOf(current.opt(i)).equals(String.valueOf(sent.opt(i)))) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -212,6 +255,7 @@ import java.util.concurrent.Future;
     synchronized void clearQueue() {
         ensureLoaded();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         persistQueue();
     }
 
@@ -235,6 +279,7 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = new JSONObject();
         mAttributionDefaultProperties = new JSONObject();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         final SharedPreferences.Editor editor = editor();
         if (editor != null) {
             editor.putString(KEY_VISITOR_ID, mVisitorId);
@@ -244,6 +289,7 @@ import java.util.concurrent.Future;
             editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
             editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
             editor.remove(KEY_EVENT_QUEUE);
+            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             clearMobileSessions(editor, retainedKey);
             editor.apply();
         }
@@ -263,6 +309,7 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = new JSONObject();
         mAttributionDefaultProperties = new JSONObject();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         mOptOut = true;
         final SharedPreferences.Editor editor = editor();
         if (editor != null) {
@@ -273,6 +320,7 @@ import java.util.concurrent.Future;
             editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
             editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
             editor.remove(KEY_EVENT_QUEUE);
+            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             clearMobileSessions(editor, null);
             editor.putBoolean(KEY_OPT_OUT, true);
             editor.apply();
@@ -376,6 +424,7 @@ import java.util.concurrent.Future;
         if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
         editor.putString(mobileKey(token), encodeMobileState(state));
         editor.putString(KEY_EVENT_QUEUE, nextQueue.toString());
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
         if (!editor.commit()) {
             // A failed disk commit can leave the in-memory preferences advanced, so restore retry state.
             SharedPreferences.Editor rollback = editor();
@@ -465,6 +514,11 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = readJsonObject(prefs, KEY_DEFAULT_USER_CONSENT_PROPERTIES);
         mAttributionDefaultProperties = readJsonObject(prefs, KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
         mEventQueue = readJsonArray(prefs, KEY_EVENT_QUEUE);
+        mQueueGeneration = prefs.getString(KEY_EVENT_QUEUE_GENERATION, null);
+        if (mQueueGeneration == null) {
+            mQueueGeneration = UUID.randomUUID().toString();
+            prefs.edit().putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).apply();
+        }
 
         if (mVisitorId == null) {
             mVisitorId = UUID.randomUUID().toString();
@@ -505,6 +559,7 @@ import java.util.concurrent.Future;
         final SharedPreferences.Editor editor = editor();
         if (editor != null) {
             editor.putString(KEY_EVENT_QUEUE, mEventQueue.toString());
+            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             editor.apply();
         }
     }
