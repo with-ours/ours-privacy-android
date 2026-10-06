@@ -437,6 +437,12 @@ import java.util.concurrent.Future;
         JSONArray pendingFacts = new JSONArray();
     }
 
+    static final class MobileStatePersistenceException extends IllegalStateException {
+        MobileStatePersistenceException(String message) {
+            super(message);
+        }
+    }
+
     synchronized MobileState getMobileState(String token) {
         ensureLoaded();
         SharedPreferences prefs = preferences();
@@ -461,9 +467,11 @@ import java.util.concurrent.Future;
     synchronized void saveMobileState(String token, MobileState state) {
         ensureLoaded();
         final SharedPreferences.Editor editor = editor();
-        if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
+        if (editor == null) {
+            throw new MobileStatePersistenceException("SharedPreferences unavailable");
+        }
         if (!editor.putString(mobileKey(token), encodeMobileState(state)).commit()) {
-            throw new IllegalStateException("Failed to persist mobile session");
+            throw new MobileStatePersistenceException("Failed to persist mobile session");
         }
     }
 

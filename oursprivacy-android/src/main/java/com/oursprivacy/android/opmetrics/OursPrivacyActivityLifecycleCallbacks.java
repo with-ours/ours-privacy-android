@@ -8,6 +8,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.oursprivacy.android.util.OPLog;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -20,6 +22,8 @@ import java.lang.ref.WeakReference;
     private Runnable checkpoint;
     private long nextCheckpointElapsed = -1;
     private MobileSession.TimePoint pauseTimePoint;
+    private JSONObject pendingLegacySessionProperties;
+    private boolean backgroundPending;
     private boolean mIsForeground = false;
     private boolean mPaused = true;
     private static Double sStartSessionTime;
@@ -42,7 +46,7 @@ import java.lang.ref.WeakReference;
 
     @Override
     public void onActivityPaused(final Activity activity) {
-        if (!mPaused) {
+        if (!mPaused && mIsForeground && !backgroundPending) {
             pauseTimePoint = mMpInstance.captureMobilePausePoint();
         }
         mPaused = true;
@@ -59,7 +63,6 @@ import java.lang.ref.WeakReference;
             @Override
             public void run() {
                 if (mIsForeground && mPaused) {
-                    mIsForeground = false;
                     JSONObject sessionProperties = null;
                     try {
                         double sessionLength = System.currentTimeMillis() - sStartSessionTime;
@@ -72,9 +75,8 @@ import java.lang.ref.WeakReference;
                     } catch (JSONException e) {
                         e.printStackTrace();
                     }
-                    mMpInstance.onBackground(pauseTimePoint, sessionProperties);
-                    pauseTimePoint = null;
-                    nextCheckpointElapsed = -1;
+                    pendingLegacySessionProperties = sessionProperties;
+                    collectBackground();
                 }
             }
         }, CHECK_DELAY);
@@ -91,22 +93,44 @@ import java.lang.ref.WeakReference;
         mCurrentActivity = new WeakReference<>(activity);
 
         mPaused = false;
-        pauseTimePoint = null;
+        if (backgroundPending && !collectBackground()) return;
         mMpInstance.onActivityResume();
         boolean wasBackground = !mIsForeground;
-        mIsForeground = true;
 
         if (check != null) {
             mHandler.removeCallbacks(check);
         }
 
         if (wasBackground) {
-            // App is in foreground now
+            try {
+                mMpInstance.onForeground();
+            } catch (PersistentIdentity.MobileStatePersistenceException e) {
+                OPLog.w("OursPrivacyActivityLifecycleCallbacks",
+                        "Unable to record foreground; will retry", e);
+                return;
+            }
+            mIsForeground = true;
             sStartSessionTime = (double) System.currentTimeMillis();
-            mMpInstance.onForeground();
             nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
         }
         scheduleCheckpoint();
+    }
+
+    private boolean collectBackground() {
+        try {
+            mMpInstance.onBackground(pauseTimePoint, pendingLegacySessionProperties);
+        } catch (PersistentIdentity.MobileStatePersistenceException e) {
+            backgroundPending = true;
+            OPLog.w("OursPrivacyActivityLifecycleCallbacks",
+                    "Unable to record background; will retry", e);
+            return false;
+        }
+        mIsForeground = false;
+        backgroundPending = false;
+        pauseTimePoint = null;
+        pendingLegacySessionProperties = null;
+        nextCheckpointElapsed = -1;
+        return true;
     }
 
     private void scheduleCheckpoint() {
@@ -118,9 +142,16 @@ import java.lang.ref.WeakReference;
             @Override
             public void run() {
                 if (!mIsForeground || mPaused) return;
-                mMpInstance.onCheckpoint();
-                nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                        + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+                try {
+                    mMpInstance.onCheckpoint();
+                    nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                            + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+                } catch (PersistentIdentity.MobileStatePersistenceException e) {
+                    nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                            + CHECK_DELAY;
+                    OPLog.w("OursPrivacyActivityLifecycleCallbacks",
+                            "Unable to record checkpoint; will retry", e);
+                }
                 scheduleCheckpoint();
             }
         };

@@ -155,6 +155,7 @@ final class MobileSession {
     private long activeSinceElapsed;
     private String activeScreen;
     private TimePoint pendingPause;
+    private boolean screenChangedDuringPause;
 
     MobileSession(PersistentIdentity identity, String token, String appVersion, String appBuild) {
         this(identity, token, appVersion, appBuild, new Clock() {
@@ -248,7 +249,11 @@ final class MobileSession {
     }
 
     synchronized void cancelPendingPause() {
+        if (foreground && screenChangedDuringPause) {
+            activeSinceElapsed = Math.max(activeSinceElapsed, clock.elapsedMillis());
+        }
         pendingPause = null;
+        screenChangedDuringPause = false;
     }
 
     synchronized MobileSnapshot snapshotAt(TimePoint point) {
@@ -263,6 +268,8 @@ final class MobileSession {
     synchronized List<MobileFact> background(TimePoint point) {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
+        long previousActiveSince = activeSinceElapsed;
+        String previousScreen = activeScreen;
         long nowWall = point.wallMillis;
         long nowElapsed = point.elapsedMillis;
         if (point.sid != null && point.sid.equals(state.sid)) {
@@ -274,16 +281,25 @@ final class MobileSession {
         accrue(state, nowElapsed);
         emitEngagement(state, nowWall, facts);
         state.lastActive = Math.max(state.lastActive, nowWall);
-        persistFacts(state, facts);
+        try {
+            persistFacts(state, facts);
+        } catch (PersistentIdentity.MobileStatePersistenceException e) {
+            activeSinceElapsed = previousActiveSince;
+            activeScreen = previousScreen;
+            throw e;
+        }
         foreground = false;
         activeScreen = null;
         pendingPause = null;
+        screenChangedDuringPause = false;
         return immutable(facts);
     }
 
     synchronized List<MobileFact> checkpoint() {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
+        long previousActiveSince = activeSinceElapsed;
+        String previousScreen = activeScreen;
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         List<MobileFact> facts = new ArrayList<>();
@@ -293,7 +309,13 @@ final class MobileSession {
             emitEngagement(state, nowWall, facts);
         }
         state.lastActive = Math.max(state.lastActive, nowWall);
-        persistFacts(state, facts);
+        try {
+            persistFacts(state, facts);
+        } catch (PersistentIdentity.MobileStatePersistenceException e) {
+            activeSinceElapsed = previousActiveSince;
+            activeScreen = previousScreen;
+            throw e;
+        }
         return immutable(facts);
     }
 
@@ -306,6 +328,9 @@ final class MobileSession {
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
+        long previousActiveSince = activeSinceElapsed;
+        String previousScreen = activeScreen;
+        boolean previousScreenChangedDuringPause = screenChangedDuringPause;
         List<MobileFact> facts = new ArrayList<>();
         reconcileClock(state, nowWall, nowElapsed, facts, true);
         boolean expired = state.sid != null && !foreground
@@ -321,11 +346,19 @@ final class MobileSession {
         if (foreground) accrue(state, nowElapsed);
         emitEngagement(state, nowWall, facts);
         activeScreen = name;
+        if (pendingPause != null) screenChangedDuringPause = true;
         state.lastActive = Math.max(state.lastActive, nowWall);
         JSONObject properties = new JSONObject();
         put(properties, "screen_name", name);
         facts.add(fact("$mobile_screen_view", state, nowWall, properties));
-        persistFacts(state, facts);
+        try {
+            persistFacts(state, facts);
+        } catch (PersistentIdentity.MobileStatePersistenceException e) {
+            activeSinceElapsed = previousActiveSince;
+            activeScreen = previousScreen;
+            screenChangedDuringPause = previousScreenChangedDuringPause;
+            throw e;
+        }
         return immutable(facts);
     }
 
@@ -399,6 +432,7 @@ final class MobileSession {
         foreground = false;
         activeScreen = null;
         pendingPause = null;
+        screenChangedDuringPause = false;
         if (!identity.getOptOut()) identity.saveMobileState(token, state);
     }
 
