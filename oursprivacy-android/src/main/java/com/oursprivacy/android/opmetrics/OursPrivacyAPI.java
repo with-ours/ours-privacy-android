@@ -317,8 +317,8 @@ public class OursPrivacyAPI {
         // Pending events are discarded — the visitor explicitly asked to stop
         // being tracked. visitor_id rotates inside optOutAndClear so a later
         // opt-in starts with a fresh identity.
-        mMobileSession.disable();
         mPersistence.optOutAndClear();
+        mMobileSession.disable();
     }
 
     public synchronized void optInTracking() {
@@ -422,6 +422,10 @@ public class OursPrivacyAPI {
 
     synchronized MobileSession.TimePoint captureMobilePausePoint() {
         return mMobileSession == null ? null : mMobileSession.capturePausePoint();
+    }
+
+    synchronized void onActivityResume() {
+        if (mMobileSession != null) mMobileSession.cancelPendingPause();
     }
 
     synchronized void onBackground(MobileSession.TimePoint point) {

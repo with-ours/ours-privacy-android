@@ -154,6 +154,7 @@ final class MobileSession {
     private boolean automatic;
     private long activeSinceElapsed;
     private String activeScreen;
+    private TimePoint pendingPause;
 
     MobileSession(PersistentIdentity identity, String token, String appVersion, String appBuild) {
         this(identity, token, appVersion, appBuild, new Clock() {
@@ -228,7 +229,12 @@ final class MobileSession {
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        return new TimePoint(nowWall, nowElapsed, state.sid, state.lastActive);
+        pendingPause = new TimePoint(nowWall, nowElapsed, state.sid, state.lastActive);
+        return pendingPause;
+    }
+
+    synchronized void cancelPendingPause() {
+        pendingPause = null;
     }
 
     synchronized MobileSnapshot snapshotAt(TimePoint point) {
@@ -257,6 +263,7 @@ final class MobileSession {
         persistFacts(state, facts);
         foreground = false;
         activeScreen = null;
+        pendingPause = null;
         return immutable(facts);
     }
 
@@ -332,8 +339,8 @@ final class MobileSession {
         if (disabled) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         if (state.sid == null) return Collections.emptyList();
-        long nowWall = clock.wallMillis();
-        long nowElapsed = clock.elapsedMillis();
+        long nowWall = pendingPause == null ? clock.wallMillis() : pendingPause.wallMillis;
+        long nowElapsed = pendingPause == null ? clock.elapsedMillis() : pendingPause.elapsedMillis;
         if (clockInvalid(state, nowWall)) {
             List<MobileFact> facts = new ArrayList<>();
             if (foreground) accrue(state, nowElapsed);
@@ -374,10 +381,11 @@ final class MobileSession {
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         clearSession(state);
         state.pendingFacts = new org.json.JSONArray();
-        identity.saveMobileState(token, state);
         disabled = true;
         foreground = false;
         activeScreen = null;
+        pendingPause = null;
+        if (!identity.getOptOut()) identity.saveMobileState(token, state);
     }
 
     synchronized void enable() {
@@ -422,10 +430,12 @@ final class MobileSession {
     }
 
     private void accrue(PersistentIdentity.MobileState state, long nowElapsed) {
-        long duration = Math.max(0, nowElapsed - activeSinceElapsed);
+        long endElapsed = pendingPause == null ? nowElapsed
+                : Math.min(nowElapsed, pendingPause.elapsedMillis);
+        long duration = Math.max(0, endElapsed - activeSinceElapsed);
         state.accumulatedMs += duration;
         state.pendingMs += duration;
-        activeSinceElapsed = nowElapsed;
+        activeSinceElapsed = Math.max(activeSinceElapsed, endElapsed);
     }
 
     private void emitEngagement(PersistentIdentity.MobileState state, long nowWall,
@@ -435,7 +445,8 @@ final class MobileSession {
             JSONObject properties = new JSONObject();
             put(properties, "engagement_duration_ms", state.pendingMs);
             if (activeScreen != null) put(properties, "screen_name", activeScreen);
-            facts.add(fact("$mobile_session_engagement", state, nowWall, properties));
+            facts.add(fact("$mobile_session_engagement", state,
+                    pendingPause == null ? nowWall : pendingPause.wallMillis, properties));
         }
         state.pendingMs = 0;
     }
@@ -460,8 +471,10 @@ final class MobileSession {
     }
 
     private MobileSnapshot snapshot(PersistentIdentity.MobileState state, long nowWall) {
+        long lastActive = pendingPause == null ? state.lastActive
+                : Math.min(state.lastActive, pendingPause.wallMillis);
         return new MobileSnapshot(state.sid, state.startedAt,
-                Math.max(Math.max(state.startedAt, state.lastActive), nowWall),
+                Math.max(Math.max(state.startedAt, lastActive), nowWall),
                 appVersion, appBuild);
     }
 

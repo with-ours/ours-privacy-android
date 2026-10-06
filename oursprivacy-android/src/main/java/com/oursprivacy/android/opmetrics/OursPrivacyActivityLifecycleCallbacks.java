@@ -92,6 +92,7 @@ import java.lang.ref.WeakReference;
 
         mPaused = false;
         pauseTimePoint = null;
+        mMpInstance.onActivityResume();
         boolean wasBackground = !mIsForeground;
         mIsForeground = true;
 
