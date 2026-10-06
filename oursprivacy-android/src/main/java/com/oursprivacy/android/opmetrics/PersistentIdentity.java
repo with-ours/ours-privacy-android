@@ -39,6 +39,7 @@ import java.util.concurrent.Future;
     private static final String KEY_EVENT_QUEUE = "event_queue";
     private static final String KEY_EVENT_QUEUE_GENERATION = "event_queue_generation";
     private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
+    private static final String KEY_HELD_TRACKS_PREFIX = "held_tracks_";
     private static final String KEY_INDEXED_INGEST_PREFIX = "indexed_ingest_";
 
     private final Future<SharedPreferences> mPrefsLoader;
@@ -167,6 +168,75 @@ import java.util.concurrent.Future;
         persistQueue();
     }
 
+    synchronized String latestPendingMobileFactId(String token) {
+        MobileState state = getMobileState(token);
+        JSONObject last = state.pendingFacts.optJSONObject(state.pendingFacts.length() - 1);
+        return last == null ? null : last.optString("id");
+    }
+
+    synchronized boolean hasHeldTracks(String token) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        return readJsonArray(prefs, heldTracksKey(token)).length() > 0;
+    }
+
+    synchronized void holdTrack(String token, JSONObject item, String afterFactId) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        final String key = heldTracksKey(token);
+        final JSONArray before = readJsonArray(prefs, key);
+        final JSONArray next = copyArray(before);
+        final JSONObject held = new JSONObject();
+        try {
+            held.put("item", new JSONObject(item.toString()));
+            if (afterFactId != null) held.put("after_fact_id", afterFactId);
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Held event is not valid JSON", e);
+        }
+        next.put(held);
+        if (!prefs.edit().putString(key, next.toString()).commit()) {
+            prefs.edit().putString(key, before.toString()).commit();
+            throw new IllegalStateException("Failed to persist held event");
+        }
+    }
+
+    synchronized boolean moveReadyHeldTrack(String token) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        final String key = heldTracksKey(token);
+        final JSONArray before = readJsonArray(prefs, key);
+        if (before.length() == 0) return false;
+        final JSONObject head = before.optJSONObject(0);
+        if (head == null) throw new IllegalStateException("Held event is not valid JSON");
+        final String afterFactId = head.optString("after_fact_id", null);
+        if (afterFactId != null) {
+            MobileState state = getMobileState(token);
+            for (int i = 0; i < state.pendingFacts.length(); i++) {
+                JSONObject fact = state.pendingFacts.optJSONObject(i);
+                if (fact != null && afterFactId.equals(fact.optString("id"))) return false;
+            }
+        }
+        final JSONObject item = head.optJSONObject("item");
+        if (item == null) throw new IllegalStateException("Held event has no item");
+        final JSONArray remaining = new JSONArray();
+        for (int i = 1; i < before.length(); i++) remaining.put(before.opt(i));
+        final JSONArray nextQueue = copyArray(mEventQueue);
+        nextQueue.put(item);
+        if (!prefs.edit().putString(key, remaining.toString())
+                .putString(KEY_EVENT_QUEUE, nextQueue.toString())
+                .putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).commit()) {
+            prefs.edit().putString(key, before.toString())
+                    .putString(KEY_EVENT_QUEUE, mEventQueue.toString())
+                    .putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).commit();
+            throw new IllegalStateException("Failed to queue held event");
+        }
+        mEventQueue = nextQueue;
+        return true;
+    }
+
     /** Returns a snapshot of the current queue. The persisted copy is not mutated. */
     synchronized JSONArray getQueueSnapshot() {
         ensureLoaded();
@@ -291,6 +361,7 @@ import java.util.concurrent.Future;
             editor.remove(KEY_EVENT_QUEUE);
             editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             clearMobileSessions(editor, retainedKey);
+            clearHeldTracks(editor);
             editor.apply();
         }
     }
@@ -322,6 +393,7 @@ import java.util.concurrent.Future;
             editor.remove(KEY_EVENT_QUEUE);
             editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             clearMobileSessions(editor, null);
+            clearHeldTracks(editor);
             editor.putBoolean(KEY_OPT_OUT, true);
             editor.apply();
         }
@@ -464,6 +536,11 @@ import java.util.concurrent.Future;
                 token.getBytes(StandardCharsets.UTF_8));
     }
 
+    private static String heldTracksKey(String token) {
+        return KEY_HELD_TRACKS_PREFIX + UUID.nameUUIDFromBytes(
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
     private static String indexedIngestKey(String token) {
         return KEY_INDEXED_INGEST_PREFIX + UUID.nameUUIDFromBytes(
                 token.getBytes(StandardCharsets.UTF_8));
@@ -483,6 +560,14 @@ import java.util.concurrent.Future;
             stored.remove("session_start_emitted");
             stored.remove("pending_facts");
             editor.putString(key, stored.toString());
+        }
+    }
+
+    private void clearHeldTracks(SharedPreferences.Editor editor) {
+        SharedPreferences prefs = preferences();
+        if (prefs == null) return;
+        for (String key : prefs.getAll().keySet()) {
+            if (key.startsWith(KEY_HELD_TRACKS_PREFIX)) editor.remove(key);
         }
     }
 

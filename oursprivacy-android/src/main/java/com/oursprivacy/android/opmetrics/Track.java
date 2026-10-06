@@ -115,6 +115,11 @@ final class Track {
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
         mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (ctx.mobileSnapshot != null) {
+            defaults.remove("app_version");
+            defaults.remove("app_build");
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", "$identify");

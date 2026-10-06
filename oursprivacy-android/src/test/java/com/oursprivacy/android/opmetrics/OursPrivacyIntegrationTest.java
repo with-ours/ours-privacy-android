@@ -1427,6 +1427,178 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void heldManualItemsSurviveRecreationWithOriginalContextAndOrder()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failQueueCommit = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithQueueCommitFailure(failQueueCommit);
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI first = newApi(clock, wrapped);
+        first.initialize(TOKEN, options);
+        first.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(first, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        failQueueCommit.set(true);
+        first.optInTracking();
+        first.trackDeepLink("https://example.test/schedule?utm_source=mobile");
+        first.trackScreen("Schedule");
+        first.track("appointment_booked", jsonOf("appointment_id", "booking-10"));
+        first.identify(OursPrivacyUserProperties.builder()
+                .externalId("synthetic-user").build());
+
+        String visitor = first.getVisitorId();
+        String sid = mobileState().getString("sid");
+        String occurredAt = MobileSession.utc(clock.wall);
+        String screenId = find(mobileState().getJSONArray("pending_facts"),
+                "$mobile_screen_view").getString("id");
+        JSONArray heldBefore = heldTracks();
+        assertEquals(4, heldBefore.length());
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < heldBefore.length(); i++) {
+            ids.add(heldBefore.getJSONObject(i).getJSONObject("item")
+                    .getString("distinct_id"));
+        }
+        assertEquals(0, queuedCount());
+
+        first.shutdownForTests();
+        clock.advance(2_000);
+        failQueueCommit.set(false);
+        OursPrivacyAPI restarted = newApi(clock, wrapped);
+        restarted.initialize(TOKEN, options);
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start", "$opt_in", "$deep_link_opened",
+                "$mobile_screen_view", "appointment_booked", "$identify"),
+                eventNames(queue).subList(0, 8));
+        for (int i = 0; i < ids.size(); i++) {
+            JSONObject item = queue.getJSONObject(i < 2 ? i + 3 : i + 4);
+            assertEquals(ids.get(i), item.getString("distinct_id"));
+            assertEquals(visitor, item.getString("visitor_id"));
+            JSONObject defaults = item.getJSONObject("defaultProperties");
+            if (i > 0) assertEquals("mobile", defaults.getString("utm_source"));
+            assertEquals(sid, defaults.getString("sid"));
+            assertEquals(occurredAt, defaults.getString("mobile_occurred_at"));
+        }
+        assertEquals("booking-10", queue.getJSONObject(6)
+                .getJSONObject("eventProperties").getString("appointment_id"));
+        assertEquals(screenId, queue.getJSONObject(5).getString("distinct_id"));
+        assertEquals("synthetic-user", queue.getJSONObject(7)
+                .getJSONObject("userProperties").getString("external_id"));
+        assertEquals(0, heldTracks().length());
+        restarted.track("retry_trigger");
+        assertEquals(0, heldTracks().length());
+        assertEquals(1, queuedEventCount("appointment_booked"));
+    }
+
+    private JSONArray heldTracks() throws Exception {
+        for (String key : preferences().getAll().keySet()) {
+            if (key.startsWith("held_tracks_")) {
+                return new JSONArray(preferences().getString(key, "[]"));
+            }
+        }
+        return new JSONArray();
+    }
+
+    @Test
+    public void failedHeldQueueCommitRetriesAfterRecreationWithoutDuplicatingItems()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failFactTransfer = new AtomicBoolean();
+        AtomicBoolean failHeldWrite = new AtomicBoolean();
+        AtomicBoolean failHeldTransfer = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithHeldFailures(
+                failFactTransfer, failHeldWrite, failHeldTransfer);
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI first = newApi(clock, wrapped);
+        first.initialize(TOKEN, options);
+        first.optOutTracking();
+        ReflectionHelpers.<OursPrivacyActivityLifecycleCallbacks>getField(
+                first, "mLifecycleCallbacks").onActivityResumed(null);
+        failFactTransfer.set(true);
+        first.optInTracking();
+        first.track("appointment_booked", jsonOf("appointment_id", "retry-booking"));
+        String bookingId = heldTracks().getJSONObject(1)
+                .getJSONObject("item").getString("distinct_id");
+
+        failFactTransfer.set(false);
+        failHeldTransfer.set(true);
+        first.flush();
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start"),
+                eventNames(new JSONArray(preferences().getString("event_queue", "[]"))));
+        assertEquals(2, heldTracks().length());
+        first.shutdownForTests();
+
+        failHeldTransfer.set(false);
+        OursPrivacyAPI restarted = newApi(clock, wrapped);
+        restarted.initialize(TOKEN, options);
+        assertEquals(0, heldTracks().length());
+        assertEquals(1, queuedEventCount("appointment_booked"));
+        assertEquals(bookingId, queuedEvent("appointment_booked")
+                .getString("distinct_id"));
+        restarted.track("retry_trigger");
+        assertEquals(1, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
+    public void failedHeldWriteThrowsAndDoesNotAcceptManualItem() throws Exception {
+        AtomicBoolean failHeldWrite = new AtomicBoolean(true);
+        SharedPreferences wrapped = preferencesWithHeldFailures(
+                new AtomicBoolean(), failHeldWrite, new AtomicBoolean());
+        OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
+        op.initialize(TOKEN, null);
+        assertThrows(IllegalStateException.class, () ->
+                op.track("appointment_booked", jsonOf("appointment_id", "not-accepted")));
+        assertEquals(0, heldTracks().length());
+        assertEquals(0, queuedCount());
+        assertThrows(IllegalStateException.class, () -> op.identify(
+                OursPrivacyUserProperties.builder().externalId("synthetic-user").build()));
+        assertEquals(0, queuedCount());
+
+        failHeldWrite.set(false);
+        op.track("appointment_booked", jsonOf("appointment_id", "accepted"));
+        assertEquals(1, queuedEventCount("appointment_booked"));
+        assertEquals("accepted", queuedEvent("appointment_booked")
+                .getJSONObject("eventProperties").getString("appointment_id"));
+    }
+
+    @Test
+    public void optOutAndResetDiscardHeldItemsBeforeRetry() throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failFactTransfer = new AtomicBoolean();
+        SharedPreferences wrapped = preferencesWithQueueCommitFailure(failFactTransfer);
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI op = newApi(clock, wrapped);
+        op.initialize(TOKEN, options);
+        op.optOutTracking();
+        ReflectionHelpers.<OursPrivacyActivityLifecycleCallbacks>getField(
+                op, "mLifecycleCallbacks").onActivityResumed(null);
+        failFactTransfer.set(true);
+        op.optInTracking();
+        op.track("appointment_booked", jsonOf("appointment_id", "discard-on-opt-out"));
+        assertEquals(2, heldTracks().length());
+        op.optOutTracking();
+        assertEquals(0, heldTracks().length());
+        assertEquals(0, queuedCount());
+
+        failFactTransfer.set(false);
+        op.optInTracking();
+        failFactTransfer.set(true);
+        op.reset();
+        op.track("appointment_booked", jsonOf("appointment_id", "discard-on-reset"));
+        assertEquals(1, heldTracks().length());
+        op.reset();
+        assertEquals(0, heldTracks().length());
+        failFactTransfer.set(false);
+        op.flush();
+        assertEquals(0, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
     public void futureFirstOpenRemainsPendingWithHeldOptInUntilEligible()
             throws Exception {
         FakeClock clock = new FakeClock();
@@ -1962,6 +2134,39 @@ public class OursPrivacyIntegrationTest {
                     });
         }).when(wrapped).edit();
         return wrapped;
+    }
+
+    private SharedPreferences preferencesWithHeldFailures(AtomicBoolean failFactTransfer,
+            AtomicBoolean failHeldWrite, AtomicBoolean failHeldTransfer) {
+        return (SharedPreferences) Proxy.newProxyInstance(
+                SharedPreferences.class.getClassLoader(),
+                new Class<?>[]{SharedPreferences.class}, (prefsProxy, prefsMethod, prefsArgs) -> {
+            if (!"edit".equals(prefsMethod.getName())) {
+                return prefsMethod.invoke(preferences(), prefsArgs);
+            }
+            SharedPreferences.Editor delegate = preferences().edit();
+            AtomicBoolean queueEdit = new AtomicBoolean();
+            AtomicBoolean heldEdit = new AtomicBoolean();
+            return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
+                    new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
+                        if ("putString".equals(method.getName())) {
+                            String key = (String) args[0];
+                            if ("event_queue".equals(key)) queueEdit.set(true);
+                            if (key.startsWith("held_tracks_")) heldEdit.set(true);
+                        }
+                        Object result = method.invoke(delegate, args);
+                        if ("commit".equals(method.getName())
+                                && (queueEdit.get() && heldEdit.get()
+                                        && failHeldTransfer.get()
+                                    || queueEdit.get() && !heldEdit.get()
+                                        && failFactTransfer.get()
+                                    || heldEdit.get() && !queueEdit.get()
+                                        && failHeldWrite.get())) {
+                            return false;
+                        }
+                        return result == delegate ? proxy : result;
+                    });
+        });
     }
 
     private SharedPreferences preferencesWithFailingCommits(
