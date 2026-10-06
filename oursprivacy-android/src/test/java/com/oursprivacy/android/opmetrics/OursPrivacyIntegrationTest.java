@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertSame;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -27,6 +28,7 @@ import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowLog;
+import org.robolectric.util.ReflectionHelpers;
 
 import java.util.HashSet;
 import java.util.ArrayList;
@@ -61,10 +63,16 @@ public class OursPrivacyIntegrationTest {
 
     private Context mContext;
     private CapturingRemoteService mNetwork;
+    private Thread.UncaughtExceptionHandler mOriginalExceptionHandler;
+    private ExceptionHandler mOriginalSdkExceptionHandler;
     private final java.util.List<OursPrivacyAPI> mInstances = new java.util.ArrayList<>();
 
     @Before
     public void setUp() {
+        mOriginalExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+        mOriginalSdkExceptionHandler = ReflectionHelpers.getStaticField(
+                ExceptionHandler.class, "sInstance");
+        ReflectionHelpers.setStaticField(ExceptionHandler.class, "sInstance", null);
         mContext = ApplicationProvider.getApplicationContext();
         PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
                 .getInternalMutablePackageInfo(mContext.getPackageName());
@@ -81,9 +89,15 @@ public class OursPrivacyIntegrationTest {
     public void tearDown() {
         // Kill every worker HandlerThread this test started. Without this, leaked
         // workers keep firing scheduled flushes against the next test's mNetwork.
-        for (OursPrivacyAPI op : mInstances) op.shutdownForTests();
-        mInstances.clear();
-        AnalyticsMessages.sTestRemoteService = null;
+        try {
+            for (OursPrivacyAPI op : mInstances) op.shutdownForTests();
+        } finally {
+            mInstances.clear();
+            AnalyticsMessages.sTestRemoteService = null;
+            Thread.setDefaultUncaughtExceptionHandler(mOriginalExceptionHandler);
+            ReflectionHelpers.setStaticField(
+                    ExceptionHandler.class, "sInstance", mOriginalSdkExceptionHandler);
+        }
     }
 
     private OursPrivacyAPI newApi() {
@@ -97,6 +111,94 @@ public class OursPrivacyIntegrationTest {
                 CompletableFuture.completedFuture(preferences));
         mInstances.add(op);
         return op;
+    }
+
+    @Test
+    public void lifecycleTrackingDoesNotRegisterOrEmitCrashesByDefault() throws Exception {
+        AtomicReference<Throwable> forwarded = new AtomicReference<>();
+        Thread.UncaughtExceptionHandler delegate = (thread, error) -> forwarded.set(error);
+        Thread.setDefaultUncaughtExceptionHandler(delegate);
+
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        assertFalse(options.getTrackAutomaticCrashes());
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, options);
+        assertSame(delegate, Thread.getDefaultUncaughtExceptionHandler());
+
+        RuntimeException crash = new RuntimeException("default crash probe");
+        Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), crash);
+        assertSame(crash, forwarded.get());
+        assertEquals(0, queuedEventCount(AutomaticEvents.APP_CRASHED));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, count(allCapturedData(), AutomaticEvents.APP_CRASHED));
+    }
+
+    @Test
+    public void explicitCrashOptInEmitsLegacyPayloadWithLifecycleOff() throws Exception {
+        AtomicReference<Throwable> forwarded = new AtomicReference<>();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> forwarded.set(error));
+
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticCrashes(true).build());
+        assertTrue(Thread.getDefaultUncaughtExceptionHandler() instanceof ExceptionHandler);
+
+        IllegalStateException crash = new IllegalStateException("crash reason");
+        Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), crash);
+        assertSame(crash, forwarded.get());
+        assertEquals(1, queuedEventCount(AutomaticEvents.APP_CRASHED));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        assertEquals(1, count(data, AutomaticEvents.APP_CRASHED));
+        assertEquals(crash.toString(), find(data, AutomaticEvents.APP_CRASHED)
+                .getJSONObject("eventProperties").getString(AutomaticEvents.APP_CRASHED_REASON));
+        assertEquals(0, count(data, "$mobile_app_open"));
+    }
+
+    @Test
+    public void optingOutStopsAnOptedInCrashHandlerFromEmitting() throws Exception {
+        AtomicReference<Throwable> forwarded = new AtomicReference<>();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> forwarded.set(error));
+
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticCrashes(true).build());
+        op.optOutTracking();
+        IllegalStateException crash = new IllegalStateException("after opt out");
+        Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), crash);
+        assertSame(crash, forwarded.get());
+        assertEquals(0, queuedEventCount(AutomaticEvents.APP_CRASHED));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, mNetwork.callCount());
+    }
+
+    @Test
+    public void manifestDisablePreventsCrashRegistrationDespiteOptIn() throws Exception {
+        AtomicReference<Throwable> forwarded = new AtomicReference<>();
+        Thread.UncaughtExceptionHandler delegate = (thread, error) -> forwarded.set(error);
+        Thread.setDefaultUncaughtExceptionHandler(delegate);
+        PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
+                .getInternalMutablePackageInfo(mContext.getPackageName());
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putBoolean(
+                "com.oursprivacy.android.Config.DisableExceptionHandler", true);
+
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticCrashes(true).build());
+        assertSame(delegate, Thread.getDefaultUncaughtExceptionHandler());
+
+        IllegalStateException crash = new IllegalStateException("manifest disabled");
+        Thread.getDefaultUncaughtExceptionHandler().uncaughtException(Thread.currentThread(), crash);
+        assertSame(crash, forwarded.get());
+        assertEquals(0, queuedEventCount(AutomaticEvents.APP_CRASHED));
     }
 
     @Test

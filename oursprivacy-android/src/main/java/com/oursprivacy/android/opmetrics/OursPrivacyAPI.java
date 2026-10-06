@@ -52,6 +52,7 @@ public class OursPrivacyAPI {
     private volatile boolean mInitialized;
     private String mToken;
     private boolean mTrackAutomaticEvents;
+    private boolean mTrackAutomaticCrashes;
     private OPConfig mConfig;
     private PersistentIdentity mPersistence;
     private AnalyticsMessages mMessages;
@@ -99,6 +100,7 @@ public class OursPrivacyAPI {
         mToken = token;
         mTrackAutomaticEvents = options != null
                 && Boolean.TRUE.equals(options.getTrackAutomaticEvents());
+        mTrackAutomaticCrashes = options != null && options.getTrackAutomaticCrashes();
         mConfig = OPConfig.getInstance(mContext);
 
         final SharedPreferencesLoader loader = new SharedPreferencesLoader();
@@ -122,7 +124,7 @@ public class OursPrivacyAPI {
         mInitialized = true;
         applyInitializationOptions(options);
         registerLifecycleCallbacks();
-        if (!mConfig.getDisableExceptionHandler()) {
+        if (mTrackAutomaticCrashes && !mConfig.getDisableExceptionHandler()) {
             ExceptionHandler.init(this);
         }
         drainMobileFacts();
@@ -387,6 +389,10 @@ public class OursPrivacyAPI {
 
     boolean getTrackAutomaticEvents() {
         return mTrackAutomaticEvents;
+    }
+
+    boolean getTrackAutomaticCrashes() {
+        return mTrackAutomaticCrashes;
     }
 
     /** Test-only: block until all queued work has been processed by the worker. */

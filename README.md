@@ -74,6 +74,7 @@ The SDK connects to `https://cdn.oursprivacy.com` by default — no endpoint con
 
 Hold a single instance for the lifetime of your app — typically on a custom `Application` subclass or in a DI container.
 `trackAutomaticEvents` defaults to `false`; pass `true` to collect lifecycle events. Explicit `trackScreen()` calls work with either setting.
+`trackAutomaticCrashes` also defaults to `false`. Enable it only if you intend to keep sending legacy exception telemetry.
 
 ### 3. Track Events
 
@@ -157,7 +158,8 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 
 | Field | Notes |
 | --- | --- |
-| `trackAutomaticEvents` | Emit the canonical `$mobile_*` lifecycle facts and legacy `$app_open` / `$ae_*` lifecycle events. Default false. Does not collect screen names. |
+| `trackAutomaticEvents` | Emit the canonical `$mobile_*` lifecycle facts and legacy `$app_open`, `$ae_first_open`, `$ae_session`, and `$ae_updated`. Default false. Does not collect screen names. |
+| `trackAutomaticCrashes` | Capture uncaught exceptions as legacy `$ae_crashed` events with `$ae_crashed_reason`. Default false; independent of `trackAutomaticEvents`. |
 | `serverURL` | Override the ingest base URL. |
 | `visitorId` | Pre-set a `visitor_id`. Sets `is_manually_set_id: true`. |
 | `initialURL` | Parsed as a deep link on init (UTM + click IDs). Respects opt-out. |
@@ -236,6 +238,8 @@ Sessions expire after 30 minutes of inactivity. Engagement durations are integer
 Every tracked mobile event carries SDK-owned `defaultProperties`: `sid`, `mobile_session_started_at`, `mobile_occurred_at` (UTC ISO-8601 with milliseconds), `mobile_platform: "android"`, `mobile_contract_version: 1`, and `app_version` / `app_build` when available. `version` remains the SDK version. The SDK does not set top-level `time`. Canonical `$mobile_*` facts omit caller default event/user properties and attribution; manual `track()` events keep them.
 
 During migration, the enabled lifecycle path also emits legacy `$app_open`, `$ae_first_open`, `$ae_session`, and `$ae_updated`. Count the canonical `$mobile_*` events for Mobile Analytics; legacy events have different meanings and no equivalent screen coverage.
+
+**Crash capture migration:** Earlier versions installed an exception handler by default and could send `$ae_crashed` when automatic events were enabled. To continue receiving the same legacy event and reason field, explicitly pass `.trackAutomaticCrashes(true)` during initialization. This works with `trackAutomaticEvents(false)`; lifecycle tracking alone no longer enables crash capture. Full `optOutTracking()` suppresses crash events, and the `com.oursprivacy.android.Config.DisableExceptionHandler` manifest flag prevents handler registration even with crash opt-in. Mobile Analytics does not consume crash telemetry.
 
 ### Default Properties
 

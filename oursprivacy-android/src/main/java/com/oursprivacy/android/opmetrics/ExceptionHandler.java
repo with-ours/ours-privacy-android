@@ -36,11 +36,12 @@ public final class ExceptionHandler implements Thread.UncaughtExceptionHandler {
     @Override
     public void uncaughtException(final Thread t, final Throwable e) {
         final OursPrivacyAPI instance = mInstanceRef == null ? null : mInstanceRef.get();
-        if (instance != null && instance.getTrackAutomaticEvents()) {
+        if (instance != null && instance.getTrackAutomaticCrashes()
+                && !instance.hasOptedOutTracking()) {
             try {
                 final JSONObject props = new JSONObject();
                 props.put(AutomaticEvents.APP_CRASHED_REASON, e.toString());
-                instance.track(AutomaticEvents.APP_CRASHED, props, true);
+                instance.track(AutomaticEvents.APP_CRASHED, props);
             } catch (JSONException ignored) {}
         }
 
