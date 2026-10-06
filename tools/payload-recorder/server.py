@@ -51,6 +51,7 @@ class RecorderHandler(http.server.BaseHTTPRequestHandler):
             parsed = json.loads(body)
             pretty = json.dumps(parsed, indent=2)
         except json.JSONDecodeError:
+            parsed = None
             pretty = body.decode("utf-8", errors="replace")
 
         ts = int(time.time() * 1000)
@@ -63,10 +64,25 @@ class RecorderHandler(http.server.BaseHTTPRequestHandler):
         print(f"[recorder] {self.path}  →  {filename}", flush=True)
         print(pretty[:400], flush=True)
 
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("data"), list):
+            self.send_error(400)
+            return
+        events = parsed["data"]
+        if not all(isinstance(event, dict) and isinstance(event.get("visitor_id"), str)
+                   for event in events):
+            self.send_error(400)
+            return
+        response_body = json.dumps({
+            "success": True,
+            "visitor_id": events[0]["visitor_id"] if events else "",
+            "accepted": len(events),
+            "rejected": [],
+        }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response_body)))
         self.end_headers()
-        self.wfile.write(b'{"status":"ok"}')
+        self.wfile.write(response_body)
 
     def log_message(self, fmt, *args):
         pass  # suppress default access log

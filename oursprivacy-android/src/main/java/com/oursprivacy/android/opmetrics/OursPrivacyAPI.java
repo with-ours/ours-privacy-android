@@ -108,7 +108,8 @@ public class OursPrivacyAPI {
                 ? new PersistentIdentity(prefs)
                 : new PersistentIdentity(prefs, mMobileClock::wallMillis);
         mBaseDefaultProperties = OPDefaultProperties.snapshot(mContext);
-        mMessages = new AnalyticsMessages(mContext, mConfig, mToken, mPersistence);
+        mMessages = new AnalyticsMessages(mContext, mConfig, mToken, mPersistence,
+                options == null ? null : options.getIngestRejectionListener());
 
         wipeLegacyArtifactsIfNeeded(prefs);
         mMobileSession = mMobileClock == null

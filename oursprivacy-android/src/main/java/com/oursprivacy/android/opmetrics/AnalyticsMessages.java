@@ -16,6 +16,11 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -41,13 +46,16 @@ import java.util.concurrent.TimeUnit;
     private final OPConfig mConfig;
     private final String mToken;
     private final PersistentIdentity mPersistence;
+    private final IngestRejectionListener mRejectionListener;
     private final Worker mWorker;
 
-    AnalyticsMessages(Context context, OPConfig config, String token, PersistentIdentity persistence) {
+    AnalyticsMessages(Context context, OPConfig config, String token,
+                      PersistentIdentity persistence, IngestRejectionListener rejectionListener) {
         mContext = context.getApplicationContext();
         mConfig = config;
         mToken = token;
         mPersistence = persistence;
+        mRejectionListener = rejectionListener;
         mWorker = new Worker();
         getPoster().checkIsOursPrivacyBlocked();
     }
@@ -235,9 +243,8 @@ import java.util.concurrent.TimeUnit;
                 try {
                     body = buildEnvelope(batch).toString();
                 } catch (JSONException e) {
-                    OPLog.e(LOGTAG, "Failed to build envelope; dropping batch", e);
-                    mPersistence.dropFromQueue(take);
-                    continue;
+                    OPLog.e(LOGTAG, "Failed to build envelope; will retry batch", e);
+                    return;
                 }
 
                 try {
@@ -251,7 +258,27 @@ import java.util.concurrent.TimeUnit;
                         OPLog.v(LOGTAG, "No response from ingest endpoint; will retry on next flush");
                         return;
                     }
-                    mPersistence.dropFromQueue(take);
+                    final BatchAcknowledgment acknowledgment;
+                    try {
+                        acknowledgment = parseAcknowledgment(response, batch,
+                                mPersistence.hasIndexedIngestMode(mToken));
+                    } catch (JSONException e) {
+                        OPLog.w(LOGTAG, "Invalid ingest response; will retry batch");
+                        return;
+                    }
+                    if (!mPersistence.acknowledgeBatch(mToken, take, acknowledgment.indexed)) {
+                        OPLog.w(LOGTAG, "Failed to persist ingest acknowledgment; will retry batch");
+                        return;
+                    }
+                    if (mRejectionListener != null) {
+                        for (IngestRejection rejection : acknowledgment.rejections) {
+                            try {
+                                mRejectionListener.onRejected(rejection.distinctId, rejection.code);
+                            } catch (RuntimeException e) {
+                                OPLog.w(LOGTAG, "Ingest rejection listener failed");
+                            }
+                        }
+                    }
                 } catch (final ServiceUnavailableException e) {
                     OPLog.v(LOGTAG, "Service unavailable; backing off " + e.getRetryAfter() + "s");
                     final long retryMs = Math.max(1000L, e.getRetryAfter() * 1000L);
@@ -264,12 +291,83 @@ import java.util.concurrent.TimeUnit;
             }
         }
 
+        private BatchAcknowledgment parseAcknowledgment(byte[] response, JSONArray batch,
+                                                        boolean indexedMode) throws JSONException {
+            final JSONObject result = new JSONObject(new String(response, StandardCharsets.UTF_8));
+            if (!Boolean.TRUE.equals(result.opt("success"))
+                    || !(result.opt("visitor_id") instanceof String)) {
+                throw new JSONException("Incomplete ingest response");
+            }
+            final boolean indexed = result.has("accepted") || result.has("rejected");
+            if (!indexed) {
+                if (indexedMode) throw new JSONException("Indexed ingest response required");
+                return new BatchAcknowledgment(false, new ArrayList<>());
+            }
+            final Object acceptedValue = result.opt("accepted");
+            final int accepted = integerValue(acceptedValue);
+            final JSONArray rejected = result.optJSONArray("rejected");
+            if (accepted < 0 || accepted > batch.length() || rejected == null) {
+                throw new JSONException("Invalid indexed ingest counts");
+            }
+            final Set<Integer> indexes = new HashSet<>();
+            final List<IngestRejection> rejections = new ArrayList<>();
+            for (int i = 0; i < rejected.length(); i++) {
+                final JSONObject entry = rejected.optJSONObject(i);
+                if (entry == null) throw new JSONException("Invalid ingest rejection");
+                final int index = integerValue(entry.opt("index"));
+                final Object code = entry.opt("code");
+                if (index < 0 || index >= batch.length() || !indexes.add(index)
+                        || !(code instanceof String) || ((String) code).isEmpty()) {
+                    throw new JSONException("Invalid ingest rejection");
+                }
+                final JSONObject event = batch.optJSONObject(index);
+                if (event == null || !(event.opt("distinct_id") instanceof String)
+                        || ((String) event.opt("distinct_id")).isEmpty()) {
+                    throw new JSONException("Missing rejected event ID");
+                }
+                rejections.add(new IngestRejection(event.optString("distinct_id"), (String) code));
+            }
+            if (accepted + rejected.length() != batch.length()) {
+                throw new JSONException("Incomplete indexed ingest response");
+            }
+            return new BatchAcknowledgment(true, rejections);
+        }
+
+        private int integerValue(Object value) throws JSONException {
+            if (value instanceof Integer) return (Integer) value;
+            if (value instanceof Long && (Long) value >= Integer.MIN_VALUE
+                    && (Long) value <= Integer.MAX_VALUE) {
+                return ((Long) value).intValue();
+            }
+            throw new JSONException("Expected integer");
+        }
+
         private JSONObject buildEnvelope(JSONArray batch) throws JSONException {
             final JSONObject envelope = new JSONObject();
             envelope.put("token", mToken);
             envelope.put("is_manually_set_id", mPersistence.isManuallySetId());
             envelope.put("data", batch);
             return envelope;
+        }
+    }
+
+    private static final class BatchAcknowledgment {
+        final boolean indexed;
+        final List<IngestRejection> rejections;
+
+        BatchAcknowledgment(boolean indexed, List<IngestRejection> rejections) {
+            this.indexed = indexed;
+            this.rejections = rejections;
+        }
+    }
+
+    private static final class IngestRejection {
+        final String distinctId;
+        final String code;
+
+        IngestRejection(String distinctId, String code) {
+            this.distinctId = distinctId;
+            this.code = code;
         }
     }
 

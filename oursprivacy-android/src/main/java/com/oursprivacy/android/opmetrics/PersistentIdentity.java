@@ -23,7 +23,7 @@ import java.util.concurrent.Future;
  *   <li>In-memory event queue, snapshotted to a single SharedPreferences JSON blob on each mutation
  * </ul>
  */
-@SuppressLint("CommitPrefEdits")
+@SuppressLint({"CommitPrefEdits", "ApplySharedPref"})
 /* package */ final class PersistentIdentity {
     interface WallClock {
         long wallMillis();
@@ -38,6 +38,7 @@ import java.util.concurrent.Future;
     private static final String KEY_ATTRIBUTION_DEFAULT_PROPERTIES = "attribution_default_properties";
     private static final String KEY_EVENT_QUEUE = "event_queue";
     private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
+    private static final String KEY_INDEXED_INGEST_PREFIX = "indexed_ingest_";
 
     private final Future<SharedPreferences> mPrefsLoader;
     private final WallClock mWallClock;
@@ -170,20 +171,37 @@ import java.util.concurrent.Future;
         return copyArray(mEventQueue);
     }
 
-    /** Drops the first {@code count} items from the queue (used post-flush). */
-    synchronized void dropFromQueue(int count) {
+    synchronized boolean hasIndexedIngestMode(String token) {
         ensureLoaded();
-        if (count <= 0) return;
-        if (count >= mEventQueue.length()) {
-            mEventQueue = new JSONArray();
-        } else {
-            final JSONArray next = new JSONArray();
-            for (int i = count; i < mEventQueue.length(); i++) {
-                next.put(mEventQueue.opt(i));
-            }
-            mEventQueue = next;
+        SharedPreferences prefs = preferences();
+        return prefs != null && prefs.getBoolean(indexedIngestKey(token), false);
+    }
+
+    synchronized boolean acknowledgeBatch(String token, int count, boolean indexed) {
+        ensureLoaded();
+        if (count <= 0 || count > mEventQueue.length()) return false;
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) return false;
+        final String indexedKey = indexedIngestKey(token);
+        final String previousQueue = mEventQueue.toString();
+        final boolean wasIndexed = prefs.getBoolean(indexedKey, false);
+        final JSONArray next = new JSONArray();
+        for (int i = count; i < mEventQueue.length(); i++) {
+            next.put(mEventQueue.opt(i));
         }
-        persistQueue();
+        final SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(KEY_EVENT_QUEUE, next.toString());
+        if (indexed) editor.putBoolean(indexedKey, true);
+        if (!editor.commit()) {
+            final SharedPreferences.Editor rollback = prefs.edit();
+            rollback.putString(KEY_EVENT_QUEUE, previousQueue);
+            if (wasIndexed) rollback.putBoolean(indexedKey, true);
+            else rollback.remove(indexedKey);
+            rollback.commit();
+            return false;
+        }
+        mEventQueue = next;
+        return true;
     }
 
     synchronized int getQueueSize() {
@@ -394,6 +412,11 @@ import java.util.concurrent.Future;
 
     private static String mobileKey(String token) {
         return KEY_MOBILE_SESSION_PREFIX + UUID.nameUUIDFromBytes(
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String indexedIngestKey(String token) {
+        return KEY_INDEXED_INGEST_PREFIX + UUID.nameUUIDFromBytes(
                 token.getBytes(StandardCharsets.UTF_8));
     }
 

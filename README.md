@@ -165,6 +165,7 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 | `defaultUserCustomProperties` | Merged into `userProperties.custom_properties` on every track + identify. |
 | `defaultUserConsentProperties` | Merged into `userProperties.consent`. Subject to the consent-omission guard documented in [Default Properties](#default-properties). |
 | `optedOutByDefault` | If true and no prior opt-out decision is persisted, opts the user out on first launch. |
+| `onIngestRejected` | Optional listener for rejected `/ingest` items. Default off. Receives only `distinct_id` and a stable error code. |
 
 ### Core Tracking
 
@@ -185,6 +186,18 @@ Fires a `$identify` event. The same merge as `track()` applies. Caller stitches 
 #### `void flush()`
 
 Forces a flush of the event queue. The worker drains in batches (default 50, max 50) until the queue is empty.
+
+Set a rejection listener at initialization if you need to inspect events that the server rejects:
+
+```java
+OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+    .onIngestRejected((distinctId, code) -> {
+        // Record the event ID and code in your own diagnostics.
+    })
+    .build();
+```
+
+The listener runs on the SDK worker after the batch is durably removed from the queue. It receives only the rejected event's `distinct_id` and stable code (for example, `mobile_occurred_at_future`); event properties, patient fields, and payloads are never passed to it. Valid indexed responses acknowledge accepted and rejected items together. Network failures and invalid responses leave the batch queued. Complete legacy success responses remain supported until that source token receives an indexed response; indexed mode then persists across app restarts for that token.
 
 #### `void reset()`
 

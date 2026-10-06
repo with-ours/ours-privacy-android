@@ -18,6 +18,7 @@ public final class OursPrivacyInitOptions {
     private final JSONObject defaultUserCustomProperties;
     private final JSONObject defaultUserConsentProperties;
     private final Boolean optedOutByDefault;
+    private final IngestRejectionListener ingestRejectionListener;
 
     private OursPrivacyInitOptions(Builder b) {
         this.trackAutomaticEvents = b.trackAutomaticEvents;
@@ -28,6 +29,7 @@ public final class OursPrivacyInitOptions {
         this.defaultUserCustomProperties = b.defaultUserCustomProperties;
         this.defaultUserConsentProperties = b.defaultUserConsentProperties;
         this.optedOutByDefault = b.optedOutByDefault;
+        this.ingestRejectionListener = b.ingestRejectionListener;
     }
 
     public static Builder builder() {
@@ -42,6 +44,7 @@ public final class OursPrivacyInitOptions {
     public JSONObject getDefaultUserCustomProperties() { return defaultUserCustomProperties; }
     public JSONObject getDefaultUserConsentProperties() { return defaultUserConsentProperties; }
     public Boolean getOptedOutByDefault() { return optedOutByDefault; }
+    public IngestRejectionListener getIngestRejectionListener() { return ingestRejectionListener; }
 
     public static final class Builder {
         private Boolean trackAutomaticEvents;
@@ -52,6 +55,7 @@ public final class OursPrivacyInitOptions {
         private JSONObject defaultUserCustomProperties;
         private JSONObject defaultUserConsentProperties;
         private Boolean optedOutByDefault;
+        private IngestRejectionListener ingestRejectionListener;
 
         public Builder trackAutomaticEvents(boolean v) { this.trackAutomaticEvents = v; return this; }
         public Builder serverURL(String v) { this.serverURL = v; return this; }
@@ -77,6 +81,10 @@ public final class OursPrivacyInitOptions {
         }
 
         public Builder optedOutByDefault(boolean v) { this.optedOutByDefault = v; return this; }
+        public Builder onIngestRejected(IngestRejectionListener v) {
+            this.ingestRejectionListener = v;
+            return this;
+        }
 
         public OursPrivacyInitOptions build() {
             return new OursPrivacyInitOptions(this);

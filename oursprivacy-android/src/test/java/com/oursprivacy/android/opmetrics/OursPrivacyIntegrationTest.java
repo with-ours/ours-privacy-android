@@ -29,9 +29,13 @@ import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowLog;
 
 import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 
@@ -995,6 +999,204 @@ public class OursPrivacyIntegrationTest {
 
     private JSONObject queuedEvent(String eventName) throws Exception {
         return find(new JSONArray(preferences().getString("event_queue", "[]")), eventName);
+    }
+
+    @Test
+    public void mixedIndexedResponseReportsRejectedIdOnceAndLeavesLaterEventQueued()
+            throws Exception {
+        List<String[]> rejections = new ArrayList<>();
+        AtomicReference<String> queueAtCallback = new AtomicReference<>();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .onIngestRejected((distinctId, code) -> {
+                    rejections.add(new String[]{distinctId, code});
+                    queueAtCallback.set(preferences().getString("event_queue", "[]"));
+                })
+                .build());
+        op.setFlushBatchSize(2);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"server-visitor\","
+                + "\"accepted\":1,\"rejected\":[{\"index\":0,"
+                + "\"code\":\"mobile_occurred_at_future\"}]}");
+        mNetwork.failWith(new IOException("offline"));
+        op.track("bad_event");
+        op.track("good_event");
+        op.track("later_event");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        String rejectedId = mNetwork.bodyAt(0).getJSONArray("data")
+                .getJSONObject(0).getString("distinct_id");
+        assertEquals(1, rejections.size());
+        assertEquals(rejectedId, rejections.get(0)[0]);
+        assertEquals("mobile_occurred_at_future", rejections.get(0)[1]);
+        assertEquals(1, new JSONArray(queueAtCallback.get()).length());
+        assertEquals(1, new JSONArray(preferences().getString("event_queue", "[]")).length());
+        assertEquals("later_event", queuedEvent("later_event").getString("event"));
+        assertEquals(2, mNetwork.callCount());
+    }
+
+    @Test
+    public void allRejectedIndexedResponseDrainsBatchWithoutListener() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"server-visitor\","
+                + "\"accepted\":0,\"rejected\":["
+                + "{\"index\":0,\"code\":\"mobile_occurred_at_future\"},"
+                + "{\"index\":1,\"code\":\"mobile_session_start_invalid\"}]}");
+        op.track("bad_one");
+        op.track("bad_two");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        assertEquals(1, mNetwork.callCount());
+    }
+
+    @Test
+    public void invalidIndexedAndLegacyResponsesKeepTheBatchForRetry() throws Exception {
+        String[] invalid = {
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":1}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"rejected\":[]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,\"rejected\":[]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":1,"
+                        + "\"rejected\":[{\"index\":0,\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":0,\"code\":\"code\"},"
+                        + "{\"index\":0,\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":1,\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":\"0\","
+                        + "\"rejected\":[{\"index\":0,\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":\"0\",\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":-1,\"code\":\"code\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":0,\"code\":null}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,"
+                        + "\"rejected\":[{\"index\":0,\"code\":\"\"}]}",
+                "{\"success\":true,\"visitor_id\":\"v\",\"accepted\":0,\"rejected\":null}",
+                "{\"success\":false,\"visitor_id\":\"v\",\"accepted\":1,\"rejected\":[]}",
+                "{\"success\":true}",
+                "{\"success\":true,\"visitor_id\":null}",
+                "{\"success\":true,\"visitor_id\":1}",
+                "{\"success\":false,\"visitor_id\":\"v\"}",
+                "not json"
+        };
+        List<String> rejections = new ArrayList<>();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .onIngestRejected((id, code) -> rejections.add(code)).build());
+        op.track("event");
+        for (String response : invalid) {
+            mNetwork.respondWith(response);
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(response, 1, queuedCount());
+            assertEquals(response, 0, rejections.size());
+        }
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":1,\"rejected\":[]}");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void completeLegacyResponseAcknowledgesBeforeIndexedMode() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.track("legacy_event");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void indexedModePersistsAcrossRestartOnlyForItsToken() throws Exception {
+        OursPrivacyAPI first = newApi();
+        first.initialize(TOKEN, null);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":1,\"rejected\":[]}");
+        first.track("indexed_event");
+        first.flush();
+        assertTrue(first.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        first.shutdownForTests();
+
+        OursPrivacyAPI restarted = newApi();
+        restarted.initialize(TOKEN, null);
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\"}");
+        restarted.track("retry_event");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, queuedCount());
+        assertEquals("retry_event", queuedEvent("retry_event").getString("event"));
+
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":1,\"rejected\":[]}");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        restarted.shutdownForTests();
+
+        OursPrivacyAPI otherToken = newApi();
+        otherToken.initialize("different-token", null);
+        otherToken.track("legacy_other_token");
+        otherToken.flush();
+        assertTrue(otherToken.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void failedAcknowledgmentCommitKeepsQueueAndSuppressesCallback() throws Exception {
+        AtomicBoolean failCommit = new AtomicBoolean(false);
+        SharedPreferences wrapped = preferencesWithAcknowledgmentCommitFailure(failCommit);
+        List<String> rejections = new ArrayList<>();
+        OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .onIngestRejected((id, code) -> rejections.add(code)).build());
+        op.track("bad_event");
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":0,\"rejected\":[{\"index\":0,\"code\":\"bad_code\"}]}");
+        failCommit.set(true);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, queuedCount());
+        assertTrue(rejections.isEmpty());
+
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\"}");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        assertTrue(rejections.isEmpty());
+    }
+
+    private int queuedCount() throws Exception {
+        return new JSONArray(preferences().getString("event_queue", "[]")).length();
+    }
+
+    private SharedPreferences preferencesWithAcknowledgmentCommitFailure(AtomicBoolean fail) {
+        SharedPreferences wrapped = spy(preferences());
+        doAnswer(invocation -> {
+            SharedPreferences.Editor delegate = preferences().edit();
+            AtomicBoolean acknowledgmentEdit = new AtomicBoolean();
+            return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
+                    new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
+                        if ("putBoolean".equals(method.getName())
+                                && ((String) args[0]).startsWith("indexed_ingest_")) {
+                            acknowledgmentEdit.set(true);
+                        }
+                        Object result = method.invoke(delegate, args);
+                        if ("commit".equals(method.getName()) && acknowledgmentEdit.get()
+                                && fail.compareAndSet(true, false)) {
+                            return false;
+                        }
+                        return result == delegate ? proxy : result;
+                    });
+        }).when(wrapped).edit();
+        return wrapped;
     }
 
     private SharedPreferences preferencesWithQueueCommitFailure(AtomicBoolean fail) {
