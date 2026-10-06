@@ -57,6 +57,8 @@ public class OursPrivacyAPI {
     private boolean mTrackAutomaticCrashes;
     private boolean mPrivacyClearFailed;
     private CountDownLatch mPrivacyTransition;
+    private final CountDownLatch mInitializationComplete = new CountDownLatch(1);
+    private volatile Throwable mInitializationFailure;
     private OPConfig mConfig;
     private PersistentIdentity mPersistence;
     private AnalyticsMessages mMessages;
@@ -135,13 +137,27 @@ public class OursPrivacyAPI {
                 mMessages.revokeUploads();
                 mPersistence.revokeConsentInMemory();
             } else {
-                finishInitialization(options);
+                try {
+                    finishInitialization(options);
+                } catch (RuntimeException | Error e) {
+                    mInitializationFailure = e;
+                    throw e;
+                } finally {
+                    mInitializationComplete.countDown();
+                }
                 return;
             }
         }
-        optOutTracking();
-        synchronized (this) {
-            finishInitialization(options);
+        try {
+            optOutTracking();
+            synchronized (this) {
+                finishInitialization(options);
+            }
+        } catch (RuntimeException | Error e) {
+            mInitializationFailure = e;
+            throw e;
+        } finally {
+            mInitializationComplete.countDown();
         }
     }
 
@@ -365,12 +381,27 @@ public class OursPrivacyAPI {
 
     public void optInTracking() {
         if (!requireInitialized("optInTracking")) return;
+        awaitInitializationComplete();
         final CountDownLatch transition = beginPrivacyTransition();
         try {
+            boolean retryClear;
+            synchronized (this) {
+                retryClear = mPrivacyClearFailed;
+                if (retryClear) mPrivacyClearFailed = false;
+            }
+            if (retryClear) {
+                try {
+                    mPersistence.optOutAndClear();
+                } catch (RuntimeException | Error e) {
+                    synchronized (this) {
+                        mPrivacyClearFailed = true;
+                    }
+                    throw e;
+                }
+            }
             synchronized (this) {
                 if (mPrivacyClearFailed) {
-                    mPersistence.optOutAndClear();
-                    mPrivacyClearFailed = false;
+                    throw new IllegalStateException("Privacy clear failed during opt-in");
                 }
                 mPersistence.setOptOut(false);
                 mMessages.openUploads();
@@ -383,6 +414,23 @@ public class OursPrivacyAPI {
             }
         } finally {
             endPrivacyTransition(transition);
+        }
+    }
+
+    private void awaitInitializationComplete() {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                mInitializationComplete.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+        if (mInitializationFailure != null) {
+            throw new IllegalStateException("Initialization did not complete",
+                    mInitializationFailure);
         }
     }
 

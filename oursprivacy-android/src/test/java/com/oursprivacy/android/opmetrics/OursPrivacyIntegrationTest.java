@@ -379,6 +379,85 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void optInWaitsForDefaultOptOutInitializationOptions() throws Exception {
+        CountDownLatch cleared = new CountDownLatch(1);
+        CountDownLatch finishInitialization = new CountDownLatch(1);
+        CountDownLatch optInReturned = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        OursPrivacyAPI op = new OursPrivacyAPI(mContext, new FakeClock(),
+                CompletableFuture.completedFuture(preferences())) {
+            @Override public void optOutTracking() {
+                super.optOutTracking();
+                cleared.countDown();
+                try {
+                    if (!finishInitialization.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        throw new AssertionError("initialization was not released");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            }
+        };
+        mInstances.add(op);
+        OursPrivacyInitOptions firstOptions = OursPrivacyInitOptions.builder()
+                .optedOutByDefault(true)
+                .trackAutomaticEvents(true)
+                .visitorId("configured-visitor")
+                .defaultEventProperties(jsonOf("configured", true))
+                .build();
+        Thread init = new Thread(() -> {
+            try {
+                op.initialize(TOKEN, firstOptions);
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        });
+        Thread optIn = new Thread(() -> {
+            try {
+                op.optInTracking();
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                optInReturned.countDown();
+            }
+        });
+        init.start();
+        try {
+            assertTrue(cleared.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            op.initialize("ignored-token", OursPrivacyInitOptions.builder()
+                    .visitorId("ignored-visitor")
+                    .defaultEventProperties(jsonOf("ignored", true)).build());
+            optIn.start();
+            assertFalse("opt-in reopened before initialization options",
+                    optInReturned.await(150, TimeUnit.MILLISECONDS));
+            op.track("pre_options_booking");
+            assertEquals(0, queuedEventCount("pre_options_booking"));
+
+            finishInitialization.countDown();
+            init.join(IDLE_TIMEOUT_MS);
+            assertTrue(optInReturned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertNull(failure.get());
+            op.track("appointment_booked");
+            assertEquals(TOKEN, ReflectionHelpers.<String>getField(op, "mToken"));
+            assertEquals("configured-visitor", op.getVisitorId());
+            assertEquals(0, queuedEventCount("pre_options_booking"));
+            JSONObject booking = queuedEvent("appointment_booked");
+            assertEquals("configured-visitor", booking.getString("visitor_id"));
+            assertTrue(booking.getJSONObject("eventProperties").getBoolean("configured"));
+            assertFalse(booking.getJSONObject("eventProperties").has("ignored"));
+            assertEquals(1, queuedEventCount("$opt_in"));
+            op.onForeground();
+            op.onForeground();
+            assertEquals(1, queuedEventCount("$mobile_first_open"));
+        } finally {
+            finishInitialization.countDown();
+            init.join(IDLE_TIMEOUT_MS);
+            optIn.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
     public void optOutCancelsRegisteredRequestAndWaitsForItsCompletion() throws Exception {
         CountDownLatch requestEntered = new CountDownLatch(1);
         CountDownLatch cancelled = new CountDownLatch(1);
@@ -566,6 +645,95 @@ public class OursPrivacyIntegrationTest {
             assertEquals(1, count(allCapturedData(), "fresh_event"));
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    public void failedClearRetryReleasesApiMonitorDuringCommit() throws Exception {
+        AtomicBoolean failClear = new AtomicBoolean(true);
+        AtomicBoolean blockClear = new AtomicBoolean();
+        CountDownLatch commitEntered = new CountDownLatch(1);
+        CountDownLatch releaseCommit = new CountDownLatch(1);
+        CountDownLatch commitFinished = new CountDownLatch(1);
+        SharedPreferences backing = preferences();
+        SharedPreferences wrapped = (SharedPreferences) Proxy.newProxyInstance(
+                SharedPreferences.class.getClassLoader(),
+                new Class<?>[]{SharedPreferences.class}, (prefsProxy, prefsMethod, prefsArgs) -> {
+                    if (!"edit".equals(prefsMethod.getName())) {
+                        return prefsMethod.invoke(backing, prefsArgs);
+                    }
+                    SharedPreferences.Editor delegate = backing.edit();
+                    AtomicBoolean heldClear = new AtomicBoolean();
+                    return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
+                            new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
+                                if ("remove".equals(method.getName())
+                                        && ((String) args[0]).startsWith("held_tracks_")) {
+                                    heldClear.set(true);
+                                }
+                                if ("commit".equals(method.getName()) && heldClear.get()) {
+                                    if (failClear.get()) return false;
+                                    if (blockClear.get()) {
+                                        commitEntered.countDown();
+                                        if (!releaseCommit.await(IDLE_TIMEOUT_MS,
+                                                TimeUnit.MILLISECONDS)) {
+                                            throw new AssertionError("clear was not released");
+                                        }
+                                    }
+                                    Object result = method.invoke(delegate, args);
+                                    commitFinished.countDown();
+                                    return result;
+                                }
+                                Object result = method.invoke(delegate, args);
+                                return result == delegate ? proxy : result;
+                            });
+                });
+        OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
+        op.initialize(TOKEN, null);
+        op.track("before_failed_clear");
+        assertThrows(IllegalStateException.class, op::optOutTracking);
+        failClear.set(false);
+        blockClear.set(true);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch monitorAcquired = new CountDownLatch(1);
+        CountDownLatch manualReturned = new CountDownLatch(1);
+        Thread optIn = new Thread(() -> {
+            try {
+                op.optInTracking();
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        });
+        Thread manual = new Thread(() -> {
+            try {
+                synchronized (op) {
+                    monitorAcquired.countDown();
+                    if (!commitFinished.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        throw new AssertionError("clear did not finish");
+                    }
+                    op.track("during_clear_retry");
+                }
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                manualReturned.countDown();
+            }
+        });
+        optIn.start();
+        try {
+            assertTrue(commitEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            manual.start();
+            assertTrue("manual caller could not acquire API monitor during clear commit",
+                    monitorAcquired.await(1_000, TimeUnit.MILLISECONDS));
+            releaseCommit.countDown();
+            assertTrue(manualReturned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            optIn.join(IDLE_TIMEOUT_MS);
+            assertNull(failure.get());
+            assertEquals(0, queuedEventCount("during_clear_retry"));
+            assertFalse(op.hasOptedOutTracking());
+        } finally {
+            releaseCommit.countDown();
+            optIn.join(IDLE_TIMEOUT_MS);
+            manual.join(IDLE_TIMEOUT_MS);
         }
     }
 
