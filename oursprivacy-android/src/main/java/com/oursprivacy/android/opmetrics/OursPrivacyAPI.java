@@ -23,7 +23,7 @@ import java.util.concurrent.Future;
  * {@link #initialize(String, OursPrivacyInitOptions)} exactly once with your
  * project token. Every other method is a no-op (and logs a warning) until
  * {@code initialize} has run. Tracking calls are safe from any thread; the
- * SDK serializes them onto a background worker.
+ * SDK serializes composition and queue insertion; delivery runs on a background worker.
  *
  * <pre>{@code
  * OursPrivacyAPI op = new OursPrivacyAPI(context);
@@ -46,6 +46,8 @@ public class OursPrivacyAPI {
     private static final String KEY_LEGACY_WIPED = "legacy_db_wiped";
 
     private final Context mContext;
+    private final MobileSession.Clock mMobileClock;
+    private final Future<SharedPreferences> mProvidedPreferences;
 
     private volatile boolean mInitialized;
     private String mToken;
@@ -54,6 +56,7 @@ public class OursPrivacyAPI {
     private PersistentIdentity mPersistence;
     private AnalyticsMessages mMessages;
     private JSONObject mBaseDefaultProperties;
+    private MobileSession mMobileSession;
     private OursPrivacyActivityLifecycleCallbacks mLifecycleCallbacks;
 
     /**
@@ -63,10 +66,17 @@ public class OursPrivacyAPI {
      * @param context any context (reduced to application context internally)
      */
     public OursPrivacyAPI(Context context) {
+        this(context, null, null);
+    }
+
+    OursPrivacyAPI(Context context, MobileSession.Clock mobileClock,
+                   Future<SharedPreferences> preferences) {
         if (context == null) {
             throw new IllegalArgumentException("context is required");
         }
         mContext = context.getApplicationContext();
+        mMobileClock = mobileClock;
+        mProvidedPreferences = preferences;
     }
 
     /**
@@ -92,22 +102,33 @@ public class OursPrivacyAPI {
         mConfig = OPConfig.getInstance(mContext);
 
         final SharedPreferencesLoader loader = new SharedPreferencesLoader();
-        final Future<SharedPreferences> prefs = loader.loadPreferences(mContext, PREFS_NAME, null);
-        mPersistence = new PersistentIdentity(prefs);
+        final Future<SharedPreferences> prefs = mProvidedPreferences == null
+                ? loader.loadPreferences(mContext, PREFS_NAME, null) : mProvidedPreferences;
+        mPersistence = mMobileClock == null
+                ? new PersistentIdentity(prefs)
+                : new PersistentIdentity(prefs, mMobileClock::wallMillis);
         mBaseDefaultProperties = OPDefaultProperties.snapshot(mContext);
         mMessages = new AnalyticsMessages(mContext, mConfig, mToken, mPersistence);
 
         wipeLegacyArtifactsIfNeeded(prefs);
+        mMobileSession = mMobileClock == null
+                ? new MobileSession(mPersistence, mToken,
+                        mBaseDefaultProperties.optString("app_version", null),
+                        mBaseDefaultProperties.optString("app_build", null))
+                : new MobileSession(mPersistence, mToken,
+                        mBaseDefaultProperties.optString("app_version", null),
+                        mBaseDefaultProperties.optString("app_build", null), mMobileClock);
+        mInitialized = true;
+        applyInitializationOptions(options);
         registerLifecycleCallbacks();
         if (!mConfig.getDisableExceptionHandler()) {
             ExceptionHandler.init(this);
         }
-
-        // Flip the initialized flag BEFORE applying options so option-driven calls
-        // (e.g. trackDeepLink for initialURL) can route through the normal public API.
-        mInitialized = true;
-
-        applyInitializationOptions(options);
+        drainMobileFacts();
+        if (options != null && options.getInitialURL() != null
+                && !options.getInitialURL().isEmpty() && !mPersistence.getOptOut()) {
+            track("$deep_link_opened", deepLinkProperties(options.getInitialURL()));
+        }
 
         emitFirstLaunchAndUpdateEventsIfNeeded();
         if (!mConfig.getDisableAppOpenEvent() && mTrackAutomaticEvents) {
@@ -122,7 +143,7 @@ public class OursPrivacyAPI {
             mConfig.setServerURL(options.getServerURL());
         }
         if (Boolean.TRUE.equals(options.getOptedOutByDefault()) && !mPersistence.hasOptOutFlag()) {
-            mPersistence.setOptOut(true);
+            optOutTracking();
         }
         if (options.getDefaultEventProperties() != null) {
             mPersistence.updateDefaultEventProperties(options.getDefaultEventProperties());
@@ -134,10 +155,11 @@ public class OursPrivacyAPI {
             mPersistence.updateDefaultUserConsentProperties(options.getDefaultUserConsentProperties());
         }
         if (options.getVisitorId() != null) {
-            mPersistence.setVisitorId(options.getVisitorId(), true);
+            setVisitorId(options.getVisitorId());
         }
-        if (options.getInitialURL() != null) {
-            trackDeepLink(options.getInitialURL());
+        if (options.getInitialURL() != null && !options.getInitialURL().isEmpty()
+                && !mPersistence.getOptOut()) {
+            applyAttribution(Attribution.parseAttributionFromURL(options.getInitialURL()));
         }
     }
 
@@ -160,7 +182,7 @@ public class OursPrivacyAPI {
         track(eventName, eventProperties, null, isAutomaticEvent);
     }
 
-    private void track(String eventName,
+    private synchronized void track(String eventName,
                        JSONObject eventProperties,
                        OursPrivacyUserProperties userProperties,
                        boolean isAutomaticEvent) {
@@ -169,23 +191,27 @@ public class OursPrivacyAPI {
         if (isAutomaticEvent && !mTrackAutomaticEvents) return;
 
         try {
-            final Track.Context ctx = buildTrackContext();
+            drainMobileFacts();
+            MobileSession.MobileSnapshot snapshot = mMobileSession.snapshot();
+            drainMobileFacts();
+            final Track.Context ctx = buildTrackContext(mPersistence.getVisitorId(), snapshot);
             final JSONObject wireUser = userProperties == null ? null : userProperties.toWireProperties();
             final JSONObject item = Track.composeTrackEvent(eventName, eventProperties, wireUser, ctx);
-            mMessages.enqueue(item);
+            enqueueTrackItem(item);
         } catch (JSONException e) {
             OPLog.e(LOGTAG, "Failed to compose track event " + eventName, e);
         }
     }
 
-    public void identify(OursPrivacyUserProperties userProperties) {
+    public synchronized void identify(OursPrivacyUserProperties userProperties) {
         if (!requireInitialized("identify")) return;
         if (mPersistence.getOptOut()) return;
         try {
-            final Track.Context ctx = buildTrackContext();
+            drainMobileFacts();
+            final Track.Context ctx = buildTrackContext(mPersistence.getVisitorId(), null);
             final JSONObject wireUser = userProperties == null ? null : userProperties.toWireProperties();
             final JSONObject item = Track.composeIdentifyEvent(wireUser, ctx);
-            mMessages.enqueue(item);
+            enqueueTrackItem(item);
         } catch (JSONException e) {
             OPLog.e(LOGTAG, "Failed to compose identify event", e);
         }
@@ -196,29 +222,37 @@ public class OursPrivacyAPI {
      * replaces the attribution default-property overlay; fires {@code $deep_link_opened}.
      * If {@code ours_visitor_id} is present, also calls {@link #setVisitorId(String)}.
      */
-    public void trackDeepLink(String url) {
+    public synchronized void trackDeepLink(String url) {
         if (!requireInitialized("trackDeepLink")) return;
         if (url == null || url.isEmpty()) return;
         if (mPersistence.getOptOut()) return;
 
-        final Attribution.Result attribution = Attribution.parseAttributionFromURL(url);
+        applyAttribution(Attribution.parseAttributionFromURL(url));
+        track("$deep_link_opened", deepLinkProperties(url));
+    }
 
+    private void applyAttribution(Attribution.Result attribution) {
         if (attribution.oursVisitorId != null) {
-            setVisitorId(attribution.oursVisitorId);
+            if (mMobileSession == null) {
+                mPersistence.setVisitorId(attribution.oursVisitorId, true);
+            } else {
+                setVisitorId(attribution.oursVisitorId);
+            }
         }
-
         final JSONObject replacement = new JSONObject();
         try {
             Track.mergeOnto(replacement, attribution.utmParams);
             Track.mergeOnto(replacement, attribution.clickIds);
         } catch (JSONException ignored) {}
         mPersistence.replaceAttributionDefaultProperties(replacement);
+    }
 
-        final JSONObject eventProps = new JSONObject();
+    private static JSONObject deepLinkProperties(String url) {
+        JSONObject properties = new JSONObject();
         try {
-            eventProps.put("url", url);
+            properties.put("url", url);
         } catch (JSONException ignored) {}
-        track("$deep_link_opened", eventProps);
+        return properties;
     }
 
     // ---------- identity ----------
@@ -232,30 +266,39 @@ public class OursPrivacyAPI {
      * Replaces the auto-generated visitor_id with the caller-supplied value and
      * sets {@code is_manually_set_id: true} on every subsequent envelope.
      */
-    public void setVisitorId(String visitorId) {
+    public synchronized void setVisitorId(String visitorId) {
         if (!requireInitialized("setVisitorId")) return;
         if (visitorId == null || visitorId.isEmpty()) {
             OPLog.w(LOGTAG, "setVisitorId called with null/empty id; ignoring");
             return;
         }
+        boolean changed = !visitorId.equals(mPersistence.getVisitorId());
+        if (changed && mMobileSession != null) {
+            drainMobileFacts();
+            mMobileSession.rotate();
+        }
         mPersistence.setVisitorId(visitorId, true);
+        if (changed && mMobileSession != null) {
+            mMobileSession.continueAfterIdentityChange();
+            drainMobileFacts();
+        }
     }
 
     // ---------- default-property bags ----------
 
-    public void updateDefaultEventProperties(JSONObject properties) {
+    public synchronized void updateDefaultEventProperties(JSONObject properties) {
         if (!requireInitialized("updateDefaultEventProperties")) return;
         if (properties == null) return;
         mPersistence.updateDefaultEventProperties(properties);
     }
 
-    public void updateDefaultUserCustomProperties(JSONObject properties) {
+    public synchronized void updateDefaultUserCustomProperties(JSONObject properties) {
         if (!requireInitialized("updateDefaultUserCustomProperties")) return;
         if (properties == null) return;
         mPersistence.updateDefaultUserCustomProperties(properties);
     }
 
-    public void updateDefaultUserConsentProperties(JSONObject properties) {
+    public synchronized void updateDefaultUserConsentProperties(JSONObject properties) {
         if (!requireInitialized("updateDefaultUserConsentProperties")) return;
         if (properties == null) return;
         mPersistence.updateDefaultUserConsentProperties(properties);
@@ -263,18 +306,19 @@ public class OursPrivacyAPI {
 
     // ---------- opt-out ----------
 
-    public void optOutTracking() {
+    public synchronized void optOutTracking() {
         if (!requireInitialized("optOutTracking")) return;
         // Pending events are discarded — the visitor explicitly asked to stop
         // being tracked. visitor_id rotates inside optOutAndClear so a later
         // opt-in starts with a fresh identity.
-        mMessages.clearQueue();
+        mMobileSession.disable();
         mPersistence.optOutAndClear();
     }
 
-    public void optInTracking() {
+    public synchronized void optInTracking() {
         if (!requireInitialized("optInTracking")) return;
         mPersistence.setOptOut(false);
+        mMobileSession.enable();
         track("$opt_in");
     }
 
@@ -317,18 +361,22 @@ public class OursPrivacyAPI {
 
     // ---------- lifecycle ----------
 
-    public void flush() {
+    public synchronized void flush() {
         if (!requireInitialized("flush")) return;
         if (mPersistence.getOptOut()) return;
+        drainMobileFacts();
         mMessages.flushNow();
     }
 
-    public void reset() {
+    public synchronized void reset() {
         if (!requireInitialized("reset")) return;
         // Best-effort flush: pending events get one chance to land before
         // persistence is wiped on the calling thread.
         mMessages.flushNow();
-        mPersistence.reset();
+        mMobileSession.rotate();
+        mPersistence.resetPreservingMobileSession(mToken);
+        mMobileSession.continueAfterIdentityChange();
+        drainMobileFacts();
     }
 
     // ---------- package-internal hooks ----------
@@ -354,14 +402,38 @@ public class OursPrivacyAPI {
         if (mMessages != null) mMessages.parkWorker(parked, release);
     }
 
-    void onBackground() {
+    synchronized void onBackground() {
+        onBackground(mMobileSession == null ? null : mMobileSession.captureTimePoint());
+    }
+
+    synchronized MobileSession.TimePoint captureMobileTimePoint() {
+        return mMobileSession == null ? null : mMobileSession.captureTimePoint();
+    }
+
+    synchronized void onBackground(MobileSession.TimePoint point) {
+        if (!mInitialized) return;
+        if (point == null) {
+            mMobileSession.background();
+        } else {
+            mMobileSession.background(point);
+        }
+        drainMobileFacts();
         if (mConfig != null && mConfig.getFlushOnBackground()) {
             flush();
         }
     }
 
-    void onForeground() {
-        // intentional no-op — session metadata isn't part of the canonical envelope
+    synchronized void onCheckpoint() {
+        if (!mInitialized || mPersistence.getOptOut()) return;
+        mMobileSession.checkpoint();
+        drainMobileFacts();
+    }
+
+    synchronized void onForeground() {
+        if (!mInitialized || mPersistence.getOptOut()) return;
+        drainMobileFacts();
+        mMobileSession.foreground(mTrackAutomaticEvents);
+        drainMobileFacts();
     }
 
     // ---------- internals ----------
@@ -373,14 +445,51 @@ public class OursPrivacyAPI {
         return false;
     }
 
-    private Track.Context buildTrackContext() {
+    private Track.Context buildTrackContext(String visitorId,
+                                            MobileSession.MobileSnapshot snapshot) {
+        return buildTrackContext(visitorId, snapshot,
+                mPersistence.getAttributionDefaultProperties());
+    }
+
+    private Track.Context buildTrackContext(String visitorId,
+                                            MobileSession.MobileSnapshot snapshot,
+                                            JSONObject attributionProperties) {
         return new Track.Context(
-                mPersistence.getVisitorId(),
+                visitorId,
                 mPersistence.getDefaultEventProperties(),
                 mPersistence.getDefaultUserCustomProperties(),
                 mPersistence.getDefaultUserConsentProperties(),
-                mPersistence.getAttributionDefaultProperties(),
-                mBaseDefaultProperties);
+                attributionProperties,
+                mBaseDefaultProperties,
+                snapshot);
+    }
+
+    private void drainMobileFacts() {
+        if (mMobileSession == null || mPersistence.getOptOut()) return;
+        for (MobileSession.MobileFact fact : mMobileSession.pendingFacts()) {
+            try {
+                JSONObject attribution = fact.attributionProperties();
+                Track.Context context = buildTrackContext(fact.visitorId(), fact.snapshot(),
+                        attribution == null
+                                ? mPersistence.getAttributionDefaultProperties() : attribution);
+                JSONObject item = Track.composeTrackEvent(fact.eventName(),
+                        fact.eventProperties(), null, context, fact.id());
+                if (!mPersistence.enqueueMobileFact(mToken, fact.id(), item)) return;
+                if (mPersistence.getQueueSize() >= mConfig.getBulkUploadLimit()) {
+                    mMessages.flushNow();
+                }
+            } catch (JSONException | IllegalStateException e) {
+                OPLog.w(LOGTAG, "Unable to queue mobile fact; will retry", e);
+                return;
+            }
+        }
+    }
+
+    private void enqueueTrackItem(JSONObject item) {
+        mPersistence.enqueueEvent(item);
+        if (mPersistence.getQueueSize() >= mConfig.getBulkUploadLimit()) {
+            mMessages.flushNow();
+        }
     }
 
     private void registerLifecycleCallbacks() {

@@ -23,19 +23,22 @@ final class Track {
         final JSONObject defaultUserConsentProperties;
         final JSONObject attributionDefaultProperties;
         final JSONObject baseDefaultProperties;
+        final MobileSession.MobileSnapshot mobileSnapshot;
 
         Context(String visitorId,
                 JSONObject defaultEventProperties,
                 JSONObject defaultUserCustomProperties,
                 JSONObject defaultUserConsentProperties,
                 JSONObject attributionDefaultProperties,
-                JSONObject baseDefaultProperties) {
+                JSONObject baseDefaultProperties,
+                MobileSession.MobileSnapshot mobileSnapshot) {
             this.visitorId = visitorId;
             this.defaultEventProperties = defaultEventProperties != null ? defaultEventProperties : new JSONObject();
             this.defaultUserCustomProperties = defaultUserCustomProperties != null ? defaultUserCustomProperties : new JSONObject();
             this.defaultUserConsentProperties = defaultUserConsentProperties != null ? defaultUserConsentProperties : new JSONObject();
             this.attributionDefaultProperties = attributionDefaultProperties != null ? attributionDefaultProperties : new JSONObject();
             this.baseDefaultProperties = baseDefaultProperties != null ? baseDefaultProperties : new JSONObject();
+            this.mobileSnapshot = mobileSnapshot;
         }
     }
 
@@ -51,7 +54,16 @@ final class Track {
                                         JSONObject eventProperties,
                                         JSONObject userProperties,
                                         Context ctx) throws JSONException {
-        final JSONObject mergedEvent = mergeOnto(new JSONObject(), ctx.defaultEventProperties);
+        return composeTrackEvent(eventName, eventProperties, userProperties, ctx, null);
+    }
+
+    static JSONObject composeTrackEvent(String eventName,
+                                        JSONObject eventProperties,
+                                        JSONObject userProperties,
+                                        Context ctx,
+                                        String fixedDistinctId) throws JSONException {
+        final JSONObject mergedEvent = new JSONObject();
+        if (fixedDistinctId == null) mergeOnto(mergedEvent, ctx.defaultEventProperties);
         if (eventProperties != null) {
             mergeOnto(mergedEvent, eventProperties);
         }
@@ -59,20 +71,28 @@ final class Track {
         // $distinct_id override lets callers pin a per-event distinct_id (replay stitching).
         final String distinctId;
         final Object override = mergedEvent.opt("$distinct_id");
-        if (override instanceof String && !((String) override).isEmpty()) {
+        if (fixedDistinctId != null) {
+            distinctId = fixedDistinctId;
+            mergedEvent.remove("$distinct_id");
+        } else if (override instanceof String && !((String) override).isEmpty()) {
             distinctId = (String) override;
             mergedEvent.remove("$distinct_id");
         } else {
             distinctId = UUID.randomUUID().toString();
         }
 
-        final JSONObject mergedUser = mergeUserProperties(
-                userProperties,
-                ctx.defaultUserCustomProperties,
-                ctx.defaultUserConsentProperties);
+        final JSONObject mergedUser = fixedDistinctId == null
+                ? mergeUserProperties(userProperties, ctx.defaultUserCustomProperties,
+                        ctx.defaultUserConsentProperties)
+                : null;
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
         mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (ctx.mobileSnapshot != null) {
+            defaults.remove("app_version");
+            defaults.remove("app_build");
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", eventName == null ? "op_event" : eventName);

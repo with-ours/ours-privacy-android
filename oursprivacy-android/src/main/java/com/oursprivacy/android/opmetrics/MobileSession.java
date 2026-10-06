@@ -25,6 +25,16 @@ final class MobileSession {
         long elapsedMillis();
     }
 
+    static final class TimePoint {
+        final long wallMillis;
+        final long elapsedMillis;
+
+        TimePoint(long wallMillis, long elapsedMillis) {
+            this.wallMillis = wallMillis;
+            this.elapsedMillis = elapsedMillis;
+        }
+    }
+
     static final class MobileSnapshot {
         private final String sid;
         private final long startedAt;
@@ -72,14 +82,18 @@ final class MobileSession {
         private final String eventName;
         private final MobileSnapshot snapshot;
         private final JSONObject properties;
+        private final JSONObject attributionProperties;
 
         MobileFact(String id, String visitorId, String eventName,
-                   MobileSnapshot snapshot, JSONObject properties) {
+                   MobileSnapshot snapshot, JSONObject properties,
+                   JSONObject attributionProperties) {
             this.id = id;
             this.visitorId = visitorId;
             this.eventName = eventName;
             this.snapshot = snapshot;
             this.properties = copy(properties);
+            this.attributionProperties = attributionProperties == null
+                    ? null : copy(attributionProperties);
         }
 
         String id() {
@@ -102,6 +116,10 @@ final class MobileSession {
             return copy(properties);
         }
 
+        JSONObject attributionProperties() {
+            return attributionProperties == null ? null : copy(attributionProperties);
+        }
+
         JSONObject toJson() {
             JSONObject value = new JSONObject();
             put(value, "id", id);
@@ -113,6 +131,9 @@ final class MobileSession {
             if (snapshot.appVersion != null) put(value, "app_version", snapshot.appVersion);
             if (snapshot.appBuild != null) put(value, "app_build", snapshot.appBuild);
             put(value, "event_properties", properties);
+            if (attributionProperties != null) {
+                put(value, "attribution_properties", attributionProperties);
+            }
             return value;
         }
 
@@ -122,7 +143,8 @@ final class MobileSession {
                     value.optString("app_version", null), value.optString("app_build", null));
             return new MobileFact(value.optString("id"), value.optString("visitor_id"),
                     value.optString("event"), snapshot,
-                    value.optJSONObject("event_properties"));
+                    value.optJSONObject("event_properties"),
+                    value.optJSONObject("attribution_properties"));
         }
     }
 
@@ -202,11 +224,19 @@ final class MobileSession {
         return immutable(facts);
     }
 
+    synchronized TimePoint captureTimePoint() {
+        return new TimePoint(clock.wallMillis(), clock.elapsedMillis());
+    }
+
     synchronized List<MobileFact> background() {
+        return background(captureTimePoint());
+    }
+
+    synchronized List<MobileFact> background(TimePoint point) {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        long nowWall = clock.wallMillis();
-        long nowElapsed = clock.elapsedMillis();
+        long nowWall = point.wallMillis;
+        long nowElapsed = point.elapsedMillis;
         List<MobileFact> facts = new ArrayList<>();
         reconcileClock(state, nowWall, nowElapsed, facts, true);
         accrue(state, nowElapsed);
@@ -400,7 +430,8 @@ final class MobileSession {
     private MobileFact fact(String name, PersistentIdentity.MobileState state, long nowWall,
                             JSONObject properties) {
         return new MobileFact(UUID.randomUUID().toString(), identity.getVisitorId(), name,
-                snapshot(state, nowWall), properties);
+                snapshot(state, nowWall), properties,
+                identity.getAttributionDefaultProperties());
     }
 
     private void persistFacts(PersistentIdentity.MobileState state, List<MobileFact> facts) {

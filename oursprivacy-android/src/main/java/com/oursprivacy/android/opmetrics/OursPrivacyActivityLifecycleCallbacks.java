@@ -17,6 +17,8 @@ import java.lang.ref.WeakReference;
 /* package */ class OursPrivacyActivityLifecycleCallbacks implements Application.ActivityLifecycleCallbacks {
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Runnable check;
+    private Runnable checkpoint;
+    private MobileSession.TimePoint pauseTimePoint;
     private boolean mIsForeground = false;
     private boolean mPaused = true;
     private static Double sStartSessionTime;
@@ -39,10 +41,16 @@ import java.lang.ref.WeakReference;
 
     @Override
     public void onActivityPaused(final Activity activity) {
+        if (!mPaused) {
+            pauseTimePoint = mMpInstance.captureMobileTimePoint();
+        }
         mPaused = true;
 
         if (check != null) {
             mHandler.removeCallbacks(check);
+        }
+        if (checkpoint != null) {
+            mHandler.removeCallbacks(checkpoint);
         }
         mCurrentActivity = null;
 
@@ -63,7 +71,8 @@ import java.lang.ref.WeakReference;
                     } catch (JSONException e) {
                         e.printStackTrace();
                     }
-                    mMpInstance.onBackground();
+                    mMpInstance.onBackground(pauseTimePoint);
+                    pauseTimePoint = null;
                 }
             }
         }, CHECK_DELAY);
@@ -80,6 +89,7 @@ import java.lang.ref.WeakReference;
         mCurrentActivity = new WeakReference<>(activity);
 
         mPaused = false;
+        pauseTimePoint = null;
         boolean wasBackground = !mIsForeground;
         mIsForeground = true;
 
@@ -92,6 +102,22 @@ import java.lang.ref.WeakReference;
             sStartSessionTime = (double) System.currentTimeMillis();
             mMpInstance.onForeground();
         }
+        scheduleCheckpoint();
+    }
+
+    private void scheduleCheckpoint() {
+        if (checkpoint != null) {
+            mHandler.removeCallbacks(checkpoint);
+        }
+        checkpoint = new Runnable() {
+            @Override
+            public void run() {
+                if (!mIsForeground || mPaused) return;
+                mMpInstance.onCheckpoint();
+                mHandler.postDelayed(this, MobileSession.ENGAGEMENT_THRESHOLD_MS);
+            }
+        };
+        mHandler.postDelayed(checkpoint, MobileSession.ENGAGEMENT_THRESHOLD_MS);
     }
 
     @Override
