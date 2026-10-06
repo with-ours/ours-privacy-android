@@ -19,6 +19,18 @@ def utc_millis(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def assert_no_private_keys(value: object, name: str) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            normalized_key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key)
+            normalized_key = normalized_key.replace("-", "_").replace(".", "_")
+            assert not PRIVATE_KEY.search(normalized_key), f"{name} contains private field {key}"
+            assert_no_private_keys(nested, name)
+    elif isinstance(value, list):
+        for nested in value:
+            assert_no_private_keys(nested, name)
+
+
 def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
     files = sorted(directory.glob("*_ingest.json"))
     assert files, "No payloads reached the recorder"
@@ -63,6 +75,21 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
         and event["eventProperties"]["engagement_duration_ms"] > 0
         for event in events
     ), "Missing positive engagement"
+    open_indices = [
+        index for index, name in enumerate(names) if name == "$mobile_app_open"
+    ]
+    screen_index = names.index("$mobile_screen_view")
+    assert open_indices[0] < screen_index < open_indices[1], (
+        "Second app open must follow the Schedule screen"
+    )
+    assert any(
+        screen_index < index < open_indices[1]
+        and event["event"] == "$mobile_session_engagement"
+        and (event.get("eventProperties") or {}).get("screen_name") == "Schedule"
+        and isinstance((event.get("eventProperties") or {}).get("engagement_duration_ms"), int)
+        and event["eventProperties"]["engagement_duration_ms"] > 0
+        for index, event in enumerate(events)
+    ), "Missing positive Schedule engagement between screen view and warm open"
 
     visitor = f"{token}-visitor"
     first_link = names.index("$deep_link_opened")
@@ -102,9 +129,10 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
         ):
             payload = json.dumps(event)
             assert not re.search(r"https?://", payload, re.IGNORECASE), f"{name} contains a raw URL"
+            if name.startswith("$mobile_"):
+                assert event.get("userProperties") is None, f"{name} contains user properties"
             for bag in ("eventProperties", "defaultProperties", "userProperties"):
-                for key in (event.get(bag) or {}):
-                    assert not PRIVATE_KEY.search(key), f"{name} contains private field {key}"
+                assert_no_private_keys(event.get(bag), name)
 
     assert by_name["demo_event"]["eventProperties"]["source"] == "demo"
     assert by_name["$identify"]["userProperties"]["external_id"] == "demo_user_1"

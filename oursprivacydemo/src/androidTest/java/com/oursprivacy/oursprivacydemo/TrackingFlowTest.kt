@@ -41,47 +41,36 @@ class TrackingFlowTest {
         }
         compose.onNodeWithContentDescription("Back").performClick()
 
+        val expected = setOf(
+            "demo_event", "\$identify", "view_item", "\$opt_in", "\$deep_link_opened",
+            "\$mobile_first_open", "\$mobile_app_open", "\$mobile_session_start",
+            "\$mobile_screen_view", "\$mobile_session_engagement", "appointment_booked"
+        )
+        val coldEvents = waitForRecorderEvents(expected - "\$mobile_session_engagement", 1)
+        val coldOpenCount = coldEvents.count { it == "\$mobile_app_open" }
+        assertEquals("Expected one app open before background", 1, coldOpenCount)
+
         SystemClock.sleep(1_200)
         compose.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
         SystemClock.sleep(800)
+        assertEquals(
+            "App opened while backgrounded",
+            coldOpenCount,
+            readRecorderEvents().count { it == "\$mobile_app_open" }
+        )
         compose.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
 
         compose.onNodeWithText("Utility").performClick()
         compose.onNodeWithText("Flush").performClick()
         compose.onNodeWithText("OK").performClick()
 
-        val expected = setOf(
-            "demo_event", "\$identify", "view_item", "\$opt_in", "\$deep_link_opened",
-            "\$mobile_first_open", "\$mobile_app_open", "\$mobile_session_start",
-            "\$mobile_screen_view", "\$mobile_session_engagement", "appointment_booked"
+        val observed = waitForRecorderEvents(expected, coldOpenCount + 1)
+        assertEquals(
+            "App-open count did not rise exactly once after resume",
+            coldOpenCount + 1,
+            observed.count { it == "\$mobile_app_open" }
         )
-        var observed = emptySet<String>()
-        var recordedEventCount = 0
-        var lastRecorderError: String? = null
-        val deadline = SystemClock.elapsedRealtime() + 30_000
-        while (SystemClock.elapsedRealtime() < deadline) {
-            try {
-                val connection = URL("${BuildConfig.RECORDER_URL}/events").openConnection() as HttpURLConnection
-                try {
-                    connection.connectTimeout = 1_000
-                    connection.readTimeout = 1_000
-                    val response = connection.inputStream.bufferedReader().use { it.readText() }
-                    val events = JSONObject(response).getJSONArray("events")
-                    observed = (0 until events.length()).map { events.getString(it) }.toSet()
-                    recordedEventCount = events.length()
-                } finally {
-                    connection.disconnect()
-                }
-            } catch (error: IOException) {
-                lastRecorderError = error.message
-            }
-            if (observed.containsAll(expected)) break
-            Thread.sleep(500)
-        }
-        assertTrue(
-            "Recorder missing ${expected - observed}; observed $observed; last error $lastRecorderError",
-            observed.containsAll(expected)
-        )
+        val recordedEventCount = observed.size
 
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("GDPR").performClick()
@@ -92,19 +81,59 @@ class TrackingFlowTest {
         compose.onNodeWithText("Track event").performClick()
         compose.onNodeWithText("OK").performClick()
         SystemClock.sleep(1_000)
-        val postOptOutEvents = JSONObject(
-            URL("${BuildConfig.RECORDER_URL}/events").readText()
-        ).getJSONArray("events")
-        assertEquals("Full opt-out allowed another event", recordedEventCount, postOptOutEvents.length())
+        assertEquals(
+            "Full opt-out allowed another event",
+            recordedEventCount,
+            readRecorderEvents().size
+        )
 
         val application = compose.activity.application as DemoApplication
         val sdk = application.sdk
         compose.activityRule.scenario.recreate()
         assertSame(sdk, application.sdk)
         SystemClock.sleep(1_000)
-        val postRestartEvents = JSONObject(
-            URL("${BuildConfig.RECORDER_URL}/events").readText()
-        ).getJSONArray("events")
-        assertEquals("Opt-out restart allowed another event", recordedEventCount, postRestartEvents.length())
+        assertEquals(
+            "Opt-out restart allowed another event",
+            recordedEventCount,
+            readRecorderEvents().size
+        )
+    }
+
+    private fun waitForRecorderEvents(expected: Set<String>, minimumAppOpens: Int): List<String> {
+        var observed = emptyList<String>()
+        var lastRecorderError: String? = null
+        val deadline = SystemClock.elapsedRealtime() + 30_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            try {
+                observed = readRecorderEvents()
+            } catch (error: IOException) {
+                lastRecorderError = error.message
+            }
+            if (observed.containsAll(expected) &&
+                observed.count { it == "\$mobile_app_open" } >= minimumAppOpens
+            ) break
+            Thread.sleep(500)
+        }
+        assertTrue(
+            "Recorder missing ${expected - observed.toSet()}; app opens " +
+                "${observed.count { it == "\$mobile_app_open" }}/$minimumAppOpens; " +
+                "last error $lastRecorderError",
+            observed.containsAll(expected) &&
+                observed.count { it == "\$mobile_app_open" } >= minimumAppOpens
+        )
+        return observed
+    }
+
+    private fun readRecorderEvents(): List<String> {
+        val connection = URL("${BuildConfig.RECORDER_URL}/events").openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 1_000
+            connection.readTimeout = 1_000
+            val response = connection.inputStream.bufferedReader().use { it.readText() }
+            val events = JSONObject(response).getJSONArray("events")
+            return (0 until events.length()).map { events.getString(it) }
+        } finally {
+            connection.disconnect()
+        }
     }
 }

@@ -158,6 +158,85 @@ class PayloadValidationTest(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 validate(Path(directory), "2.0.0")
 
+    def test_rejects_two_app_opens_before_schedule_engagement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            def move_warm_open_before_screen(body):
+                second_open = body["data"].pop()
+                first_open_index = next(
+                    index for index, event in enumerate(body["data"])
+                    if event["event"] == "$mobile_app_open"
+                )
+                body["data"].insert(first_open_index + 1, second_open)
+            self.mutate_capture(directory, move_warm_open_before_screen)
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_unnamed_engagement_after_schedule_view(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            def remove_screen_attribution(body):
+                engagement = next(
+                    event for event in body["data"]
+                    if event["event"] == "$mobile_session_engagement"
+                )
+                engagement["eventProperties"].pop("screen_name")
+            self.mutate_capture(directory, remove_screen_attribution)
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_schedule_engagement_before_schedule_view(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            def move_engagement_before_screen(body):
+                engagement = next(
+                    event for event in body["data"]
+                    if event["event"] == "$mobile_session_engagement"
+                )
+                body["data"].remove(engagement)
+                screen_index = next(
+                    index for index, event in enumerate(body["data"])
+                    if event["event"] == "$mobile_screen_view"
+                )
+                body["data"].insert(screen_index, engagement)
+            self.mutate_capture(directory, move_engagement_before_screen)
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_canonical_user_properties_even_without_private_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            def add_user_properties(body):
+                opening = next(
+                    event for event in body["data"] if event["event"] == "$mobile_first_open"
+                )
+                opening["userProperties"] = {"custom_properties": {"preferred_language": "en"}}
+            self.mutate_capture(directory, add_user_properties)
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_nested_private_keys_on_automatic_facts(self):
+        for bag, nested in (
+            ("userProperties", {"custom_properties": {"patient_email": "synthetic@example.com"}}),
+            ("eventProperties", {"details": {"patient_email": "synthetic@example.com"}}),
+            ("defaultProperties", {"identifiers": [{"gaid": "synthetic-ad-id"}]}),
+            ("eventProperties", {"details": {"patientEmail": "synthetic@example.com"}}),
+            ("defaultProperties", {"identifiers": [{"advertisingId": "synthetic-ad-id"}]}),
+        ):
+            with self.subTest(bag=bag), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                def add_nested_field(body):
+                    opening = next(
+                        event for event in body["data"] if event["event"] == "$mobile_first_open"
+                    )
+                    if bag == "defaultProperties":
+                        opening[bag].update(nested)
+                    else:
+                        opening[bag] = nested
+                self.mutate_capture(directory, add_nested_field)
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
     def test_rejects_booking_with_wrong_visitor(self):
         with tempfile.TemporaryDirectory() as directory:
             self.write_capture(directory, "2.0.0")
