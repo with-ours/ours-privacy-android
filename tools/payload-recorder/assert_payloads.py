@@ -32,14 +32,14 @@ def validate(directory: Path, version: str) -> None:
     assert by_name["$identify"]["userProperties"]["email"] == "demo@example.com"
     assert by_name["view_item"]["eventProperties"]["sku"] == "ABC-001"
     assert by_name["view_item"]["userProperties"]["phone_number"] == "+1-555-0100"
-    deep_link = by_name["$deep_link_opened"]
-    event_properties = deep_link["eventProperties"]
-    assert event_properties is None or "url" not in event_properties
-    assert "https://example.com/landing" not in json.dumps(deep_link)
-    assert "patient_email" not in json.dumps(deep_link)
-    assert deep_link["defaultProperties"]["utm_source"] == "demo"
-    assert deep_link["defaultProperties"]["utm_medium"] == "android"
-    assert deep_link["defaultProperties"]["gclid"] == "demoGclid"
+    for deep_link in (event for event in events if event["event"] == "$deep_link_opened"):
+        event_properties = deep_link["eventProperties"]
+        assert event_properties is None or "url" not in event_properties
+        assert "https://example.com/landing" not in json.dumps(deep_link)
+        assert "patient_email" not in json.dumps(deep_link)
+        assert deep_link["defaultProperties"].get("utm_source") == "demo"
+        assert deep_link["defaultProperties"].get("utm_medium") == "android"
+        assert deep_link["defaultProperties"].get("gclid") == "demoGclid"
     print(f"Validated {len(events)} recorded events for SDK {version}")
 
 

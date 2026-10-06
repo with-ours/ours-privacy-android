@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import tempfile
 import unittest
@@ -122,6 +123,47 @@ class PayloadValidationTest(unittest.TestCase):
                 event for event in envelope["data"] if event["event"] == "$deep_link_opened"
             )
             deep_link["eventProperties"] = {"patient_email": "secret"}
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_earlier_raw_url_when_later_deep_link_is_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            earlier = deepcopy(envelope["data"][-1])
+            earlier["distinct_id"] = "earlier-deep-link"
+            earlier["eventProperties"] = {
+                "url": "https://example.com/landing?utm_source=demo"
+            }
+            envelope["data"].insert(-1, earlier)
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_earlier_patient_field_when_later_deep_link_is_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            earlier = deepcopy(envelope["data"][-1])
+            earlier["distinct_id"] = "earlier-deep-link"
+            earlier["eventProperties"] = {"patient_email": "secret"}
+            envelope["data"].insert(-1, earlier)
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_earlier_missing_attribution_when_later_deep_link_is_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            earlier = deepcopy(envelope["data"][-1])
+            earlier["distinct_id"] = "earlier-deep-link"
+            del earlier["defaultProperties"]["utm_source"]
+            envelope["data"].insert(-1, earlier)
             path.write_text(json.dumps(envelope))
             with self.assertRaises(AssertionError):
                 validate(Path(directory), "2.0.0")
