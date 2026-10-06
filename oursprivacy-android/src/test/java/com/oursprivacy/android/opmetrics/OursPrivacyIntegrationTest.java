@@ -322,6 +322,53 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void manualReservedMobileNamesDoNotQueueOrConsumeFirstOpen() throws Exception {
+        OursPrivacyAPI manual = newApi();
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .defaultEventProperties(jsonOf("caller_default", "unsafe"))
+                .defaultUserCustomProperties(jsonOf("segment", "unsafe"))
+                .build();
+        manual.initialize(TOKEN, options);
+        manual.track("$mobile_first_open", jsonOf("impersonated", true));
+        manual.track("$mobile_app_open");
+        manual.track("$mobile_session_engagement", jsonOf("engagement_duration_ms", 10_000),
+                OursPrivacyUserProperties.builder().externalId("manual-user").build());
+        assertEquals(0, queuedCount());
+        manual.flush();
+        assertTrue(manual.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, mNetwork.callCount());
+        manual.shutdownForTests();
+
+        OursPrivacyAPI automatic = newApi();
+        automatic.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .defaultEventProperties(jsonOf("caller_default", "unsafe"))
+                .defaultUserCustomProperties(jsonOf("segment", "unsafe"))
+                .build());
+        automatic.onForeground();
+        assertEquals(1, queuedEventCount("$mobile_first_open"));
+        assertTrue(mobileState().getBoolean("first_open_accepted"));
+        JSONObject first = queuedEvent("$mobile_first_open");
+        assertTrue(first.isNull("eventProperties"));
+        assertTrue(first.isNull("userProperties"));
+        assertFalse(first.getJSONObject("defaultProperties").has("caller_default"));
+        automatic.flush();
+        assertTrue(automatic.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, count(allCapturedData(), "$mobile_first_open"));
+    }
+
+    @Test
+    public void manualLegacyAndHealthcareNamesStillQueue() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.track("$ae_custom");
+        op.track("appointment_booked", jsonOf("appointment_id", "booking-legacy"));
+        assertEquals(2, queuedCount());
+        assertEquals(1, queuedEventCount("$ae_custom"));
+        assertEquals(1, queuedEventCount("appointment_booked"));
+    }
+
+    @Test
     public void initialDeepLinkAndAutoOffBookingUseStitchedVisitorAndSession()
             throws Exception {
         OursPrivacyAPI op = newApi();
@@ -1088,6 +1135,118 @@ public class OursPrivacyIntegrationTest {
         assertEquals(10_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(0, count(data, "$mobile_session_end"));
+    }
+
+    @Test
+    public void warmReturnCheckpointsAtCumulativeThresholdThenUsesRegularInterval()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                new OursPrivacyActivityLifecycleCallbacks(op, OPConfig.getInstance(mContext));
+        callbacks.onActivityResumed(null);
+        String sid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(9_000);
+        callbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        assertEquals(9_000, mobileState().getLong("accumulated_ms"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, count(allCapturedData(), "$mobile_session_engagement"));
+        clock.advance(1_000);
+        callbacks.onActivityResumed(null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(sid, nth(allCapturedData(), "$mobile_app_open", 1)
+                .getJSONObject("defaultProperties").getString("sid"));
+        clock.advance(999);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(999));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, count(allCapturedData(), "$mobile_session_engagement"));
+        clock.advance(1);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(2, count(allCapturedData(), "$mobile_session_engagement"));
+        clock.advance(9_999);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(9_999));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(2, count(allCapturedData(), "$mobile_session_engagement"));
+        clock.advance(1);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1));
+        callbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        assertEquals(3, count(data, "$mobile_session_engagement"));
+        assertEquals(9_000, nth(data, "$mobile_session_engagement", 0)
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        assertEquals(1_000, nth(data, "$mobile_session_engagement", 1)
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        assertEquals(10_000, nth(data, "$mobile_session_engagement", 2)
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        for (int i = 0; i < 3; i++) {
+            assertEquals(sid, nth(data, "$mobile_session_engagement", i)
+                    .getJSONObject("defaultProperties").getString("sid"));
+        }
+    }
+
+    @Test
+    public void restoredWarmReturnCheckpointsAfterRemainingForegroundSecond()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI first = newApi(clock, preferences());
+        first.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks firstCallbacks =
+                new OursPrivacyActivityLifecycleCallbacks(first, OPConfig.getInstance(mContext));
+        firstCallbacks.onActivityResumed(null);
+        String sid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(9_000);
+        firstCallbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        assertEquals(9_000, mobileState().getLong("accumulated_ms"));
+        first.shutdownForTests();
+
+        clock.advance(1_000);
+        OursPrivacyAPI restored = newApi(clock, preferences());
+        restored.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        OursPrivacyActivityLifecycleCallbacks restoredCallbacks =
+                new OursPrivacyActivityLifecycleCallbacks(restored, OPConfig.getInstance(mContext));
+        restoredCallbacks.onActivityResumed(null);
+        clock.advance(1_000);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1_001));
+        restored.flush();
+        assertTrue(restored.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(2, count(allCapturedData(), "$mobile_session_engagement"));
+        restoredCallbacks.onActivityPaused(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
+                OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
+        restored.flush();
+        assertTrue(restored.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        assertEquals(1, count(data, "$mobile_first_open"));
+        assertEquals(1, count(data, "$mobile_session_start"));
+        assertEquals(2, count(data, "$mobile_session_engagement"));
+        assertEquals(9_000, nth(data, "$mobile_session_engagement", 0)
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        assertEquals(1_000, nth(data, "$mobile_session_engagement", 1)
+                .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+        assertEquals(sid, nth(data, "$mobile_session_engagement", 1)
+                .getJSONObject("defaultProperties").getString("sid"));
     }
 
     @Test

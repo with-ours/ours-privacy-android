@@ -217,6 +217,7 @@ public class OursPrivacyAPI {
         if (!requireInitialized("track")) return;
         if (mPersistence.getOptOut()) return;
         if (isAutomaticEvent && !mTrackAutomaticEvents) return;
+        if (!isAutomaticEvent && eventName != null && eventName.startsWith("$mobile_")) return;
 
         try {
             drainMobileFacts();
@@ -438,6 +439,10 @@ public class OursPrivacyAPI {
 
     synchronized MobileSession.TimePoint captureMobileTimePoint() {
         return mMobileSession == null ? null : mMobileSession.captureTimePoint();
+    }
+
+    synchronized long nextMobileCheckpointElapsed() {
+        return mMobileSession.nextCheckpointElapsed();
     }
 
     synchronized MobileSession.TimePoint captureMobilePausePoint() {

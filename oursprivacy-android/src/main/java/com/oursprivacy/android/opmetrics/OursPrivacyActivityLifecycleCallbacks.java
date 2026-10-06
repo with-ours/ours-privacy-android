@@ -104,8 +104,7 @@ import java.lang.ref.WeakReference;
             // App is in foreground now
             sStartSessionTime = (double) System.currentTimeMillis();
             mMpInstance.onForeground();
-            nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                    + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+            nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
         }
         scheduleCheckpoint();
     }

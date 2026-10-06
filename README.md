@@ -176,6 +176,7 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 #### `void track(String eventName, JSONObject eventProperties, OursPrivacyUserProperties userProperties)`
 
 Fires an event. `eventProperties` end up on the wire under `eventProperties`; `userProperties` get merged with the store-level default user-property bags and end up under `userProperties`.
+Names beginning with `$mobile_` are reserved for SDK telemetry and are ignored by manual `track()` calls. Use `trackScreen()` for a screen view; other manual event names, including healthcare and legacy `$ae_*` names, remain available.
 
 #### `void trackScreen(String name)`
 

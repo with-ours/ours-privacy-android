@@ -228,6 +228,17 @@ final class MobileSession {
         return new TimePoint(clock.wallMillis(), clock.elapsedMillis());
     }
 
+    synchronized long nextCheckpointElapsed() {
+        long nowElapsed = clock.elapsedMillis();
+        if (disabled || !foreground) return nowElapsed + ENGAGEMENT_THRESHOLD_MS;
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        long accumulated = state.accumulatedMs + Math.max(0, nowElapsed - activeSinceElapsed);
+        if (accumulated >= ENGAGEMENT_THRESHOLD_MS) {
+            return nowElapsed + ENGAGEMENT_THRESHOLD_MS;
+        }
+        return nowElapsed + ENGAGEMENT_THRESHOLD_MS - accumulated;
+    }
+
     synchronized TimePoint capturePausePoint() {
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
