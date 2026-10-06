@@ -1154,6 +1154,65 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void foregroundOptInQueuesOneCanonicalOpenBeforeOptInEvent()
+            throws Exception {
+        OursPrivacyAPI op = newApi(new FakeClock(), preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        String oldVisitor = op.getVisitorId();
+        op.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        assertEquals(0, queuedCount());
+
+        op.optInTracking();
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(4, queue.length());
+        assertEquals("$mobile_first_open", queue.getJSONObject(0).getString("event"));
+        assertEquals("$mobile_app_open", queue.getJSONObject(1).getString("event"));
+        assertEquals("$mobile_session_start", queue.getJSONObject(2).getString("event"));
+        assertEquals("$opt_in", queue.getJSONObject(3).getString("event"));
+        String visitor = op.getVisitorId();
+        String sid = queue.getJSONObject(0).getJSONObject("defaultProperties")
+                .getString("sid");
+        assertNotEquals(oldVisitor, visitor);
+        for (int i = 0; i < queue.length(); i++) {
+            assertEquals(visitor, queue.getJSONObject(i).getString("visitor_id"));
+            assertEquals(sid, queue.getJSONObject(i).getJSONObject("defaultProperties")
+                    .getString("sid"));
+        }
+
+        callbacks.onActivityResumed(null);
+        assertEquals(1, queuedEventCount("$mobile_first_open"));
+        assertEquals(1, queuedEventCount("$mobile_app_open"));
+        assertEquals(1, queuedEventCount("$mobile_session_start"));
+        assertEquals(4, queuedCount());
+    }
+
+    @Test
+    public void foregroundOptInWithAutomaticOffQueuesOnlyManualEvents()
+            throws Exception {
+        OursPrivacyAPI op = newApi(new FakeClock(), preferences());
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder().build());
+        op.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+
+        op.optInTracking();
+        op.track("appointment_booked");
+        callbacks.onActivityResumed(null);
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(2, queue.length());
+        assertEquals("$opt_in", queue.getJSONObject(0).getString("event"));
+        assertEquals("appointment_booked", queue.getJSONObject(1).getString("event"));
+        assertEquals(queue.getJSONObject(0).getJSONObject("defaultProperties")
+                        .getString("sid"),
+                queue.getJSONObject(1).getJSONObject("defaultProperties").getString("sid"));
+    }
+
+    @Test
     public void failedMobileCommitCannotPreventPublicOptOutOrClearPendingFacts()
             throws Exception {
         AtomicBoolean failMobileCommit = new AtomicBoolean();

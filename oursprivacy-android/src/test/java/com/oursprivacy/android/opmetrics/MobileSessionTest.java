@@ -295,6 +295,28 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void firstKnownAppMetadataEstablishesBaselineBeforeLaterUpdate() throws Exception {
+        MobileSession unknown = session(null, null);
+        unknown.foreground(true);
+        acceptFirstOpen(unknown);
+        unknown.background();
+        clock.advance(1_000);
+
+        MobileSession known = recreated("1.0", "10");
+        assertEquals(List.of("$mobile_app_open"), names(known.foreground(true)));
+        known.background();
+        clock.advance(1_000);
+
+        MobileSession changed = recreated("2.0", "11");
+        List<MobileSession.MobileFact> facts = changed.foreground(true);
+        assertEquals(List.of("$mobile_app_update", "$mobile_app_open"), names(facts));
+        assertEquals("1.0", facts.get(0).eventProperties()
+                .getString("previous_app_version"));
+        assertEquals("10", facts.get(0).eventProperties()
+                .getString("previous_app_build"));
+    }
+
+    @Test
     public void processRecreationKeepsSessionAndOriginalUtcStartAcrossMidnight()
             throws Exception {
         clock.wall = 1_759_708_795_000L;

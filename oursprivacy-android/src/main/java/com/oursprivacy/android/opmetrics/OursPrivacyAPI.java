@@ -325,6 +325,10 @@ public class OursPrivacyAPI {
         if (!requireInitialized("optInTracking")) return;
         mPersistence.setOptOut(false);
         mMobileSession.enable();
+        if (mTrackAutomaticEvents && mLifecycleCallbacks != null
+                && mLifecycleCallbacks.isInForeground()) {
+            onForeground();
+        }
         track("$opt_in");
     }
 

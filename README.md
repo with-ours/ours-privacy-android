@@ -230,10 +230,10 @@ With `trackAutomaticEvents(true)`, the SDK emits these lifecycle facts:
 | `$mobile_session_start` | First tracked foreground entry in a session | None |
 | `$mobile_session_engagement` | Positive foreground-time checkpoint, screen change, or background | `engagement_duration_ms`; `screen_name` when a tracked screen was active |
 | `$mobile_session_end` | Best effort when a session expires or is explicitly ended | None |
-| `$mobile_app_update` | First tracked open after a previously observed app version/build changes | `previous_app_version`, `previous_app_build` when known |
+| `$mobile_app_update` | First tracked open after a previously known app version/build changes; newly available metadata establishes a baseline without an update | `previous_app_version`, `previous_app_build` when known |
 | `$mobile_screen_view` | Explicit `trackScreen(name)` call | `screen_name` |
 
-Sessions expire after 30 minutes of inactivity. Engagement durations are integer milliseconds and a screen change assigns the preceding positive delta to the previous screen. Manual `track()` and `trackScreen()` still work when automatic tracking is off. Full `optOutTracking()` suppresses all of them; a later opt-in starts a new session.
+Sessions expire after 30 minutes of inactivity. Engagement durations are integer milliseconds and a screen change assigns the preceding positive delta to the previous screen. Manual `track()` and `trackScreen()` still work when automatic tracking is off. Full `optOutTracking()` suppresses all of them and rotates `visitor_id`; a later opt-in starts a new session under that visitor.
 
 Every tracked mobile event carries SDK-owned `defaultProperties`: `sid`, `mobile_session_started_at`, `mobile_occurred_at` (UTC ISO-8601 with milliseconds), `mobile_platform: "android"`, `mobile_contract_version: 1`, and `app_version` / `app_build` when available. `version` remains the SDK version. The SDK does not set top-level `time`. Canonical `$mobile_*` facts omit caller default event/user properties and attribution; manual `track()` events keep them.
 
@@ -280,8 +280,8 @@ Attribution overlays live in `defaultProperties`, not `userProperties`.
 
 ### Privacy Controls
 
-- **`optOutTracking()`** — clears the in-flight queue, wipes the four default-property bags, and persists the opt-out flag. Subsequent `track()` / `trackScreen()` / `identify()` / `flush()` calls are no-ops.
-- **`optInTracking()`** — clears the opt-out flag and fires `$opt_in`.
+- **`optOutTracking()`** — clears the in-flight queue, wipes the four default-property bags, rotates `visitor_id`, and persists the opt-out flag. Subsequent `track()` / `trackScreen()` / `identify()` / `flush()` calls are no-ops.
+- **`optInTracking()`** — clears the opt-out flag. With automatic events enabled and an Activity already foreground, it queues the first eligible canonical open facts before `$opt_in`; with automatic events off, it sends only `$opt_in`.
 - **`hasOptedOutTracking()`** — current persisted opt-out state.
 
 ---

@@ -194,7 +194,8 @@ final class MobileSession {
             if (!state.firstOpenAccepted && !hasPending(state, "$mobile_first_open")) {
                 facts.add(fact("$mobile_first_open", state, nowWall, null));
             }
-            if (state.appObserved && (!equal(state.appVersion, appVersion)
+            if (state.appObserved && (state.appVersion != null || state.appBuild != null)
+                    && (!equal(state.appVersion, appVersion)
                     || !equal(state.appBuild, appBuild))) {
                 JSONObject properties = new JSONObject();
                 if (state.appVersion != null) {
