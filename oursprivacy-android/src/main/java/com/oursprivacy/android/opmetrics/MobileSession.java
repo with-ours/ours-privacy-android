@@ -18,6 +18,7 @@ import java.util.UUID;
 final class MobileSession {
     static final long SESSION_TIMEOUT_MS = 30L * 60L * 1000L;
     static final long ENGAGEMENT_THRESHOLD_MS = 10L * 1000L;
+    static final long MAX_FUTURE_MS = 5L * 60L * 1000L;
 
     interface Clock {
         long wallMillis();
@@ -66,14 +67,27 @@ final class MobileSession {
     }
 
     static final class MobileFact {
+        private final String id;
+        private final String visitorId;
         private final String eventName;
         private final MobileSnapshot snapshot;
         private final JSONObject properties;
 
-        MobileFact(String eventName, MobileSnapshot snapshot, JSONObject properties) {
+        MobileFact(String id, String visitorId, String eventName,
+                   MobileSnapshot snapshot, JSONObject properties) {
+            this.id = id;
+            this.visitorId = visitorId;
             this.eventName = eventName;
             this.snapshot = snapshot;
             this.properties = copy(properties);
+        }
+
+        String id() {
+            return id;
+        }
+
+        String visitorId() {
+            return visitorId;
         }
 
         String eventName() {
@@ -87,6 +101,29 @@ final class MobileSession {
         JSONObject eventProperties() {
             return copy(properties);
         }
+
+        JSONObject toJson() {
+            JSONObject value = new JSONObject();
+            put(value, "id", id);
+            put(value, "visitor_id", visitorId);
+            put(value, "event", eventName);
+            put(value, "sid", snapshot.sid);
+            put(value, "started_at", snapshot.startedAt);
+            put(value, "occurred_at", snapshot.occurredAt);
+            if (snapshot.appVersion != null) put(value, "app_version", snapshot.appVersion);
+            if (snapshot.appBuild != null) put(value, "app_build", snapshot.appBuild);
+            put(value, "event_properties", properties);
+            return value;
+        }
+
+        static MobileFact fromJson(JSONObject value) {
+            MobileSnapshot snapshot = new MobileSnapshot(value.optString("sid"),
+                    value.optLong("started_at"), value.optLong("occurred_at"),
+                    value.optString("app_version", null), value.optString("app_build", null));
+            return new MobileFact(value.optString("id"), value.optString("visitor_id"),
+                    value.optString("event"), snapshot,
+                    value.optJSONObject("event_properties"));
+        }
     }
 
     private final PersistentIdentity identity;
@@ -97,7 +134,6 @@ final class MobileSession {
     private boolean disabled;
     private boolean foreground;
     private boolean automatic;
-    private boolean firstOpenPending;
     private long activeSinceElapsed;
     private String activeScreen;
 
@@ -126,8 +162,9 @@ final class MobileSession {
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        boolean expired = state.sid != null && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
         List<MobileFact> facts = new ArrayList<>();
+        reconcileClock(state, nowWall, nowElapsed, facts, false);
+        boolean expired = state.sid != null && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
         if (expired && automatic) {
             facts.add(fact("$mobile_session_end", state, nowWall, null));
         }
@@ -135,9 +172,8 @@ final class MobileSession {
         if (newSession) startNew(state, nowWall);
         state.lastActive = Math.max(state.lastActive, nowWall);
         if (automatic) {
-            if (!state.firstOpenAccepted) {
+            if (!state.firstOpenAccepted && !hasPending(state, "$mobile_first_open")) {
                 facts.add(fact("$mobile_first_open", state, nowWall, null));
-                firstOpenPending = true;
             }
             if (state.appObserved && (!equal(state.appVersion, appVersion)
                     || !equal(state.appBuild, appBuild))) {
@@ -159,7 +195,7 @@ final class MobileSession {
                 state.sessionStartEmitted = true;
             }
         }
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
         foreground = true;
         this.automatic = automatic;
         activeSinceElapsed = nowElapsed;
@@ -170,11 +206,12 @@ final class MobileSession {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         long nowWall = clock.wallMillis();
-        accrue(state, clock.elapsedMillis());
         List<MobileFact> facts = new ArrayList<>();
+        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        accrue(state, clock.elapsedMillis());
         emitEngagement(state, nowWall, facts);
         state.lastActive = Math.max(state.lastActive, nowWall);
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
         foreground = false;
         activeScreen = null;
         return immutable(facts);
@@ -184,13 +221,14 @@ final class MobileSession {
         if (disabled || !foreground) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         long nowWall = clock.wallMillis();
-        accrue(state, clock.elapsedMillis());
         List<MobileFact> facts = new ArrayList<>();
+        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        accrue(state, clock.elapsedMillis());
         if (state.accumulatedMs >= ENGAGEMENT_THRESHOLD_MS) {
             emitEngagement(state, nowWall, facts);
         }
         state.lastActive = Math.max(state.lastActive, nowWall);
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
         return immutable(facts);
     }
 
@@ -199,19 +237,28 @@ final class MobileSession {
         if (name == null || name.isEmpty()) {
             throw new IllegalArgumentException("screen name is required");
         }
-        if (name.equals(activeScreen)) return Collections.emptyList();
         long nowWall = clock.wallMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        if (state.sid == null) startNew(state, nowWall);
-        if (foreground) accrue(state, clock.elapsedMillis());
         List<MobileFact> facts = new ArrayList<>();
+        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        boolean expired = state.sid != null && !foreground
+                && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
+        if (!expired && name.equals(activeScreen)) return Collections.emptyList();
+        if (expired && automatic) {
+            facts.add(fact("$mobile_session_end", state, nowWall, null));
+        }
+        if (state.sid == null || expired) {
+            startNew(state, nowWall);
+            activeScreen = null;
+        }
+        if (foreground) accrue(state, clock.elapsedMillis());
         emitEngagement(state, nowWall, facts);
         activeScreen = name;
         state.lastActive = Math.max(state.lastActive, nowWall);
         JSONObject properties = new JSONObject();
         put(properties, "screen_name", name);
         facts.add(fact("$mobile_screen_view", state, nowWall, properties));
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
         return immutable(facts);
     }
 
@@ -219,12 +266,18 @@ final class MobileSession {
         if (disabled) return null;
         long nowWall = clock.wallMillis();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        if (state.sid == null || (!foreground
-                && nowWall - state.lastActive >= SESSION_TIMEOUT_MS)) {
+        List<MobileFact> facts = new ArrayList<>();
+        reconcileClock(state, nowWall, clock.elapsedMillis(), facts, true);
+        boolean expired = state.sid != null && !foreground
+                && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
+        if (expired && automatic) {
+            facts.add(fact("$mobile_session_end", state, nowWall, null));
+        }
+        if (state.sid == null || expired) {
             startNew(state, nowWall);
         }
         state.lastActive = Math.max(state.lastActive, nowWall);
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
         return snapshot(state, nowWall);
     }
 
@@ -234,6 +287,13 @@ final class MobileSession {
         if (state.sid == null) return Collections.emptyList();
         long nowWall = clock.wallMillis();
         long nowElapsed = clock.elapsedMillis();
+        if (clockInvalid(state, nowWall)) {
+            startNew(state, nowWall);
+            activeSinceElapsed = nowElapsed;
+            activeScreen = null;
+            identity.saveMobileState(token, state);
+            return Collections.emptyList();
+        }
         if (foreground) accrue(state, nowElapsed);
         List<MobileFact> facts = new ArrayList<>();
         emitEngagement(state, nowWall, facts);
@@ -241,24 +301,31 @@ final class MobileSession {
         if (foreground) {
             startNew(state, nowWall);
             activeSinceElapsed = nowElapsed;
-            if (automatic) {
-                facts.add(fact("$mobile_session_start", state, nowWall, null));
-                state.sessionStartEmitted = true;
-            }
         } else {
             clearSession(state);
         }
-        identity.saveMobileState(token, state);
+        persistFacts(state, facts);
+        return immutable(facts);
+    }
+
+    synchronized List<MobileFact> continueAfterIdentityChange() {
+        if (disabled || !foreground || !automatic) return Collections.emptyList();
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        if (state.sid == null || state.sessionStartEmitted) return Collections.emptyList();
+        List<MobileFact> facts = new ArrayList<>();
+        facts.add(fact("$mobile_session_start", state, state.startedAt, null));
+        state.sessionStartEmitted = true;
+        persistFacts(state, facts);
         return immutable(facts);
     }
 
     synchronized void disable() {
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         clearSession(state);
+        state.pendingFacts = new org.json.JSONArray();
         identity.saveMobileState(token, state);
         disabled = true;
         foreground = false;
-        firstOpenPending = false;
         activeScreen = null;
     }
 
@@ -266,10 +333,37 @@ final class MobileSession {
         disabled = identity.getOptOut();
     }
 
-    synchronized void acceptFirstOpen() {
-        if (disabled || !firstOpenPending || identity.getOptOut()) return;
-        identity.acceptMobileFirstOpen(token);
-        firstOpenPending = false;
+    synchronized List<MobileFact> pendingFacts() {
+        if (disabled) return Collections.emptyList();
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        List<MobileFact> facts = new ArrayList<>();
+        long futureLimit = clock.wallMillis() + MAX_FUTURE_MS;
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            JSONObject value = state.pendingFacts.optJSONObject(i);
+            if (value == null) continue;
+            // A deferred future fact holds later facts so replay retains first-open and session order.
+            if (value.optLong("occurred_at") > futureLimit) break;
+            facts.add(MobileFact.fromJson(value));
+        }
+        return immutable(facts);
+    }
+
+    private boolean reconcileClock(PersistentIdentity.MobileState state, long nowWall,
+                                   long nowElapsed, List<MobileFact> facts, boolean startFact) {
+        if (!clockInvalid(state, nowWall)) return false;
+        startNew(state, nowWall);
+        activeSinceElapsed = nowElapsed;
+        activeScreen = null;
+        if (startFact && foreground && automatic) {
+            facts.add(fact("$mobile_session_start", state, nowWall, null));
+            state.sessionStartEmitted = true;
+        }
+        return true;
+    }
+
+    private static boolean clockInvalid(PersistentIdentity.MobileState state, long nowWall) {
+        return state.sid != null && (state.startedAt - nowWall > MAX_FUTURE_MS
+                || state.lastActive - nowWall > MAX_FUTURE_MS);
     }
 
     private void accrue(PersistentIdentity.MobileState state, long nowElapsed) {
@@ -293,7 +387,21 @@ final class MobileSession {
 
     private MobileFact fact(String name, PersistentIdentity.MobileState state, long nowWall,
                             JSONObject properties) {
-        return new MobileFact(name, snapshot(state, nowWall), properties);
+        return new MobileFact(UUID.randomUUID().toString(), identity.getVisitorId(), name,
+                snapshot(state, nowWall), properties);
+    }
+
+    private void persistFacts(PersistentIdentity.MobileState state, List<MobileFact> facts) {
+        for (MobileFact fact : facts) state.pendingFacts.put(fact.toJson());
+        identity.saveMobileState(token, state);
+    }
+
+    private static boolean hasPending(PersistentIdentity.MobileState state, String name) {
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            JSONObject value = state.pendingFacts.optJSONObject(i);
+            if (value != null && name.equals(value.optString("event"))) return true;
+        }
+        return false;
     }
 
     private MobileSnapshot snapshot(PersistentIdentity.MobileState state, long nowWall) {
@@ -351,7 +459,7 @@ final class MobileSession {
         }
     }
 
-    private static String utc(long millis) {
+    static String utc(long millis) {
         SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
                 Locale.US);
         format.setTimeZone(TimeZone.getTimeZone("UTC"));
