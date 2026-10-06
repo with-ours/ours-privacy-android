@@ -201,6 +201,31 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void restoredResumeCrossingThresholdBeforeDeadlineCheckSchedulesImmediately()
+            throws Exception {
+        MobileSession first = session("1.0", "10");
+        String sid = first.foreground(true).get(0).snapshot().sid();
+        clock.advance(9_999);
+        assertEquals(9_999, first.background().get(0).eventProperties()
+                .getLong("engagement_duration_ms"));
+
+        MobileSession restored = recreated("1.0", "10");
+        clock.advance(1_000);
+        assertEquals(sid, restored.foreground(true).get(0).snapshot().sid());
+        clock.advance(1);
+        assertEquals(clock.elapsedMillis(), restored.nextCheckpointElapsed());
+        List<MobileSession.MobileFact> facts = restored.checkpoint();
+        assertEquals(List.of("$mobile_session_engagement"), names(facts));
+        assertEquals(1, facts.get(0).eventProperties().getLong("engagement_duration_ms"));
+        assertEquals(sid, facts.get(0).snapshot().sid());
+        assertTrue(restored.background().isEmpty());
+
+        clock.advance(1_000);
+        restored.foreground(true);
+        assertEquals(clock.elapsedMillis() + 10_000, restored.nextCheckpointElapsed());
+    }
+
+    @Test
     public void screenTransitionAttributesPriorTimeAndPreservesScreenAcrossCallbacks()
             throws Exception {
         MobileSession session = session("1.0", "10");

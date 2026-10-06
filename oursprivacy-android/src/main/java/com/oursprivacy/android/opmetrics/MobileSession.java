@@ -232,11 +232,11 @@ final class MobileSession {
         long nowElapsed = clock.elapsedMillis();
         if (disabled || !foreground) return nowElapsed + ENGAGEMENT_THRESHOLD_MS;
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        long accumulated = state.accumulatedMs + Math.max(0, nowElapsed - activeSinceElapsed);
-        if (accumulated >= ENGAGEMENT_THRESHOLD_MS) {
-            return nowElapsed + ENGAGEMENT_THRESHOLD_MS;
+        if (state.accumulatedMs < ENGAGEMENT_THRESHOLD_MS) {
+            long accumulated = state.accumulatedMs + Math.max(0, nowElapsed - activeSinceElapsed);
+            return nowElapsed + Math.max(0, ENGAGEMENT_THRESHOLD_MS - accumulated);
         }
-        return nowElapsed + ENGAGEMENT_THRESHOLD_MS - accumulated;
+        return nowElapsed + ENGAGEMENT_THRESHOLD_MS;
     }
 
     synchronized TimePoint capturePausePoint() {
