@@ -192,6 +192,193 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void manualEventsWaitForMobileSessionToReopenWithConsent() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.optOutTracking();
+        ReflectionHelpers.<OursPrivacyActivityLifecycleCallbacks>getField(
+                op, "mLifecycleCallbacks").onActivityResumed(null);
+        UploadFence fence = ReflectionHelpers.getField(
+                ReflectionHelpers.getField(op, "mMessages"), "mUploadFence");
+        CountDownLatch started = new CountDownLatch(3);
+        CountDownLatch returned = new CountDownLatch(3);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread optIn = new Thread(() -> {
+            try {
+                op.optInTracking();
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        });
+        List<Thread> manual = new ArrayList<>();
+        try {
+            synchronized (fence) {
+                optIn.start();
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(IDLE_TIMEOUT_MS);
+                while (op.hasOptedOutTracking() && System.nanoTime() < deadline) {
+                    Thread.yield();
+                }
+                assertFalse("opt-in never reopened consent", op.hasOptedOutTracking());
+                manual.add(new Thread(() -> {
+                    started.countDown();
+                    try {
+                        op.track("appointment_booked", jsonOf("appointment_id", "appointment-1"));
+                    } catch (Throwable e) {
+                        failure.set(e);
+                    } finally {
+                        returned.countDown();
+                    }
+                }));
+                manual.add(new Thread(() -> {
+                    started.countDown();
+                    try {
+                        op.identify(OursPrivacyUserProperties.builder()
+                                .externalId("visitor-1").build());
+                    } catch (Throwable e) {
+                        failure.set(e);
+                    } finally {
+                        returned.countDown();
+                    }
+                }));
+                manual.add(new Thread(() -> {
+                    started.countDown();
+                    try {
+                        op.trackScreen("Schedule");
+                    } catch (Throwable e) {
+                        failure.set(e);
+                    } finally {
+                        returned.countDown();
+                    }
+                }));
+                for (Thread thread : manual) thread.start();
+                assertTrue(started.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+                assertFalse("manual API returned before the mobile session reopened",
+                        returned.await(150, TimeUnit.MILLISECONDS));
+            }
+            optIn.join(IDLE_TIMEOUT_MS);
+            for (Thread thread : manual) thread.join(IDLE_TIMEOUT_MS);
+            assertNull(failure.get());
+            assertEquals(0, returned.getCount());
+            JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+            for (String event : List.of("appointment_booked", "$identify", "$mobile_screen_view")) {
+                JSONObject defaults = find(queue, event).getJSONObject("defaultProperties");
+                assertTrue(defaults.has("sid"));
+                assertTrue(defaults.has("mobile_session_started_at"));
+                assertTrue(defaults.has("mobile_occurred_at"));
+            }
+            assertTrue(eventNames(queue).indexOf("$mobile_first_open")
+                    < eventNames(queue).indexOf("$opt_in"));
+            assertTrue(eventNames(queue).indexOf("$opt_in")
+                    < eventNames(queue).indexOf("appointment_booked"));
+        } finally {
+            for (Thread thread : manual) thread.join(IDLE_TIMEOUT_MS);
+            optIn.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
+    public void defaultOptOutInitializationReleasesApiMonitorWhileTransportFinishes()
+            throws Exception {
+        preferences().edit()
+                .putString("event_queue", "[{\"event\":\"pre_init_event\","
+                        + "\"visitor_id\":\"old-visitor\"}]")
+                .putString("event_queue_generation", "pre-init-generation").commit();
+        CountDownLatch wipeEntered = new CountDownLatch(1);
+        CountDownLatch releaseWipe = new CountDownLatch(1);
+        SharedPreferences wrapped = (SharedPreferences) Proxy.newProxyInstance(
+                SharedPreferences.class.getClassLoader(),
+                new Class<?>[]{SharedPreferences.class}, (proxy, method, args) -> {
+                    if ("getBoolean".equals(method.getName())
+                            && "legacy_db_wiped".equals(args[0])) {
+                        wipeEntered.countDown();
+                        if (!releaseWipe.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                            throw new AssertionError("initialization was not released");
+                        }
+                    }
+                    return method.invoke(preferences(), args);
+                });
+        OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
+        CountDownLatch requestEntered = new CountDownLatch(1);
+        CountDownLatch releaseRequest = new CountDownLatch(1);
+        mNetwork.blockNextRequest(requestEntered, releaseRequest);
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .optedOutByDefault(true)
+                .visitorId("configured-visitor")
+                .defaultEventProperties(jsonOf("configured", true)).build();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch initialized = new CountDownLatch(1);
+        Thread init = new Thread(() -> {
+            try {
+                op.initialize(TOKEN, options);
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                initialized.countDown();
+            }
+        });
+        init.start();
+        try {
+            assertTrue(wipeEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            ReflectionHelpers.<AnalyticsMessages>getField(op, "mMessages").flushNow();
+            assertTrue(requestEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            releaseWipe.countDown();
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(IDLE_TIMEOUT_MS);
+            while (!op.hasOptedOutTracking() && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertTrue(op.hasOptedOutTracking());
+            CountDownLatch reentered = new CountDownLatch(1);
+            Thread callback = new Thread(() -> {
+                try {
+                    op.track("callback_event");
+                } catch (Throwable e) {
+                    failure.set(e);
+                } finally {
+                    reentered.countDown();
+                }
+            });
+            callback.start();
+            assertTrue("API monitor held during transport wait",
+                    reentered.await(1_000, TimeUnit.MILLISECONDS));
+            CountDownLatch secondInitializeReturned = new CountDownLatch(1);
+            Thread duplicate = new Thread(() -> {
+                try {
+                    op.initialize("ignored-token", OursPrivacyInitOptions.builder()
+                            .defaultEventProperties(jsonOf("ignored", true)).build());
+                } catch (Throwable e) {
+                    failure.set(e);
+                } finally {
+                    secondInitializeReturned.countDown();
+                }
+            });
+            duplicate.start();
+            assertTrue("duplicate initialize held behind transport",
+                    secondInitializeReturned.await(1_000, TimeUnit.MILLISECONDS));
+            assertFalse(initialized.await(150, TimeUnit.MILLISECONDS));
+            releaseRequest.countDown();
+            assertTrue(initialized.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            callback.join(IDLE_TIMEOUT_MS);
+            duplicate.join(IDLE_TIMEOUT_MS);
+            assertNull(failure.get());
+            assertTrue(op.hasOptedOutTracking());
+            assertEquals("configured-visitor", op.getVisitorId());
+            assertEquals(0, queuedCount());
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(1, mNetwork.callCount());
+            assertFalse(preferences().getString("default_event_properties", "")
+                    .contains("ignored"));
+            assertTrue(preferences().getString("default_event_properties", "")
+                    .contains("configured"));
+        } finally {
+            releaseWipe.countDown();
+            releaseRequest.countDown();
+            init.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
     public void optOutCancelsRegisteredRequestAndWaitsForItsCompletion() throws Exception {
         CountDownLatch requestEntered = new CountDownLatch(1);
         CountDownLatch cancelled = new CountDownLatch(1);

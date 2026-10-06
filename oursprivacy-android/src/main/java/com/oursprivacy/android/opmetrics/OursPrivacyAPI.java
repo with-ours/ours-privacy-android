@@ -92,40 +92,60 @@ public class OursPrivacyAPI {
      * @param token   ingest project token. Required.
      * @param options optional bag of bootstrap settings. May be null.
      */
-    public synchronized void initialize(String token, OursPrivacyInitOptions options) {
-        if (token == null || token.isEmpty()) {
-            throw new IllegalArgumentException("token is required");
+    public void initialize(String token, OursPrivacyInitOptions options) {
+        final boolean defaultOptOut;
+        synchronized (this) {
+            if (token == null || token.isEmpty()) {
+                throw new IllegalArgumentException("token is required");
+            }
+            if (mInitialized) {
+                OPLog.w(LOGTAG, "initialize called more than once; ignoring this call.");
+                return;
+            }
+
+            mToken = token;
+            mTrackAutomaticEvents = options != null
+                    && Boolean.TRUE.equals(options.getTrackAutomaticEvents());
+            mTrackAutomaticCrashes = options != null && options.getTrackAutomaticCrashes();
+            mConfig = OPConfig.getInstance(mContext);
+
+            final SharedPreferencesLoader loader = new SharedPreferencesLoader();
+            final Future<SharedPreferences> prefs = mProvidedPreferences == null
+                    ? loader.loadPreferences(mContext, PREFS_NAME, null) : mProvidedPreferences;
+            mPersistence = mMobileClock == null
+                    ? new PersistentIdentity(prefs)
+                    : new PersistentIdentity(prefs, mMobileClock::wallMillis);
+            mBaseDefaultProperties = OPDefaultProperties.snapshot(mContext);
+            mMessages = new AnalyticsMessages(mContext, mConfig, mToken, mPersistence,
+                    options == null ? null : options.getIngestRejectionListener());
+
+            wipeLegacyArtifactsIfNeeded(prefs);
+            mMobileSession = mMobileClock == null
+                    ? new MobileSession(mPersistence, mToken,
+                            mBaseDefaultProperties.optString("app_version", null),
+                            mBaseDefaultProperties.optString("app_build", null))
+                    : new MobileSession(mPersistence, mToken,
+                            mBaseDefaultProperties.optString("app_version", null),
+                            mBaseDefaultProperties.optString("app_build", null), mMobileClock);
+            mInitialized = true;
+            defaultOptOut = options != null
+                    && Boolean.TRUE.equals(options.getOptedOutByDefault())
+                    && !mPersistence.hasOptOutFlag();
+            if (defaultOptOut) {
+                mMessages.revokeUploads();
+                mPersistence.revokeConsentInMemory();
+            } else {
+                finishInitialization(options);
+                return;
+            }
         }
-        if (mInitialized) {
-            OPLog.w(LOGTAG, "initialize called more than once; ignoring this call.");
-            return;
+        optOutTracking();
+        synchronized (this) {
+            finishInitialization(options);
         }
+    }
 
-        mToken = token;
-        mTrackAutomaticEvents = options != null
-                && Boolean.TRUE.equals(options.getTrackAutomaticEvents());
-        mTrackAutomaticCrashes = options != null && options.getTrackAutomaticCrashes();
-        mConfig = OPConfig.getInstance(mContext);
-
-        final SharedPreferencesLoader loader = new SharedPreferencesLoader();
-        final Future<SharedPreferences> prefs = mProvidedPreferences == null
-                ? loader.loadPreferences(mContext, PREFS_NAME, null) : mProvidedPreferences;
-        mPersistence = mMobileClock == null
-                ? new PersistentIdentity(prefs)
-                : new PersistentIdentity(prefs, mMobileClock::wallMillis);
-        mBaseDefaultProperties = OPDefaultProperties.snapshot(mContext);
-        mMessages = new AnalyticsMessages(mContext, mConfig, mToken, mPersistence,
-                options == null ? null : options.getIngestRejectionListener());
-
-        wipeLegacyArtifactsIfNeeded(prefs);
-        mMobileSession = mMobileClock == null
-                ? new MobileSession(mPersistence, mToken,
-                        mBaseDefaultProperties.optString("app_version", null),
-                        mBaseDefaultProperties.optString("app_build", null))
-                : new MobileSession(mPersistence, mToken,
-                        mBaseDefaultProperties.optString("app_version", null),
-                        mBaseDefaultProperties.optString("app_build", null), mMobileClock);
-        mInitialized = true;
+    private void finishInitialization(OursPrivacyInitOptions options) {
         applyInitializationOptions(options);
         registerLifecycleCallbacks();
         if (mTrackAutomaticCrashes && !mConfig.getDisableExceptionHandler()) {
@@ -148,9 +168,6 @@ public class OursPrivacyAPI {
 
         if (options.getServerURL() != null) {
             mConfig.setServerURL(options.getServerURL());
-        }
-        if (Boolean.TRUE.equals(options.getOptedOutByDefault()) && !mPersistence.hasOptOutFlag()) {
-            optOutTracking();
         }
         if (options.getDefaultEventProperties() != null) {
             mPersistence.updateDefaultEventProperties(options.getDefaultEventProperties());
@@ -350,18 +367,20 @@ public class OursPrivacyAPI {
         if (!requireInitialized("optInTracking")) return;
         final CountDownLatch transition = beginPrivacyTransition();
         try {
-            if (mPrivacyClearFailed) {
-                mPersistence.optOutAndClear();
-                mPrivacyClearFailed = false;
+            synchronized (this) {
+                if (mPrivacyClearFailed) {
+                    mPersistence.optOutAndClear();
+                    mPrivacyClearFailed = false;
+                }
+                mPersistence.setOptOut(false);
+                mMessages.openUploads();
+                mMobileSession.enable();
+                if (mTrackAutomaticEvents && mLifecycleCallbacks != null
+                        && mLifecycleCallbacks.isInForeground()) {
+                    onForeground();
+                }
+                track("$opt_in");
             }
-            mPersistence.setOptOut(false);
-            mMessages.openUploads();
-            mMobileSession.enable();
-            if (mTrackAutomaticEvents && mLifecycleCallbacks != null
-                    && mLifecycleCallbacks.isInForeground()) {
-                onForeground();
-            }
-            track("$opt_in");
         } finally {
             endPrivacyTransition(transition);
         }
