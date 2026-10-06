@@ -95,6 +95,18 @@ public final class HttpService implements RemoteService {
                                  String body,
                                  SSLSocketFactory socketFactory)
             throws ServiceUnavailableException, IOException {
+        return performRequest(endpointUrl, interactor, params, body, socketFactory,
+                new RequestCancellation());
+    }
+
+    @Override
+    public byte[] performRequest(String endpointUrl,
+                                 ProxyServerInteractor interactor,
+                                 Map<String, Object> params,
+                                 String body,
+                                 SSLSocketFactory socketFactory,
+                                 RequestCancellation cancellation)
+            throws ServiceUnavailableException, IOException {
         OPLog.v(LOGTAG, "Attempting request to " + endpointUrl);
         if (body == null) {
             throw new IOException("HttpService.performRequest called with null body");
@@ -106,12 +118,16 @@ public final class HttpService implements RemoteService {
 
         // Workaround for a known HttpURLConnection bug where stale connections cause spurious EOFExceptions.
         while (retries < 3 && !succeeded) {
+            checkNotCancelled(cancellation);
             InputStream in = null;
             OutputStream out = null;
             HttpURLConnection connection = null;
             try {
                 final URL url = new URL(endpointUrl);
                 connection = (HttpURLConnection) url.openConnection();
+                final HttpURLConnection activeConnection = connection;
+                cancellation.setOnCancel(activeConnection::disconnect);
+                checkNotCancelled(cancellation);
                 if (socketFactory != null && connection instanceof HttpsURLConnection) {
                     ((HttpsURLConnection) connection).setSSLSocketFactory(socketFactory);
                 }
@@ -134,6 +150,7 @@ public final class HttpService implements RemoteService {
 
                 final byte[] payload = body.getBytes(StandardCharsets.UTF_8);
                 out = connection.getOutputStream();
+                checkNotCancelled(cancellation);
                 if (mShouldGzip) {
                     connection.setRequestProperty("Content-Encoding", "gzip");
                     final GZIPOutputStream gz = new GZIPOutputStream(new BufferedOutputStream(out));
@@ -146,6 +163,7 @@ public final class HttpService implements RemoteService {
                 }
                 out.close();
                 out = null;
+                checkNotCancelled(cancellation);
 
                 if (interactor != null && isProxyRequest(endpointUrl)) {
                     interactor.onProxyResponse(endpointUrl, connection.getResponseCode());
@@ -153,6 +171,7 @@ public final class HttpService implements RemoteService {
 
                 in = connection.getInputStream();
                 response = slurp(in);
+                checkNotCancelled(cancellation);
                 in.close();
                 in = null;
                 succeeded = true;
@@ -160,6 +179,7 @@ public final class HttpService implements RemoteService {
                 OPLog.d(LOGTAG, "Stale connection; retrying.");
                 retries++;
             } catch (final IOException e) {
+                checkNotCancelled(cancellation);
                 if (connection != null
                         && connection.getResponseCode() >= MIN_UNAVAILABLE_HTTP_RESPONSE_CODE
                         && connection.getResponseCode() <= MAX_UNAVAILABLE_HTTP_RESPONSE_CODE) {
@@ -167,17 +187,26 @@ public final class HttpService implements RemoteService {
                             connection.getHeaderField("Retry-After"));
                 }
                 throw e;
+            } catch (final RuntimeException e) {
+                if (cancellation.isCancelled()) throw new IOException("Request cancelled", e);
+                throw e;
             } finally {
                 if (out != null) try { out.close(); } catch (IOException ignored) {}
                 if (in != null) try { in.close(); } catch (IOException ignored) {}
                 if (connection != null) connection.disconnect();
+                cancellation.setOnCancel(null);
             }
         }
 
         if (retries >= 3) {
             OPLog.v(LOGTAG, "Could not connect to OursPrivacy service after three retries.");
         }
+        checkNotCancelled(cancellation);
         return response;
+    }
+
+    private static void checkNotCancelled(RequestCancellation cancellation) throws IOException {
+        if (cancellation.isCancelled()) throw new IOException("Request cancelled");
     }
 
     private static boolean isProxyRequest(String endpointUrl) {

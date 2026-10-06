@@ -14,6 +14,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 
 /**
@@ -54,6 +56,7 @@ public class OursPrivacyAPI {
     private boolean mTrackAutomaticEvents;
     private boolean mTrackAutomaticCrashes;
     private boolean mPrivacyClearFailed;
+    private CountDownLatch mPrivacyTransition;
     private OPConfig mConfig;
     private PersistentIdentity mPersistence;
     private AnalyticsMessages mMessages;
@@ -316,35 +319,82 @@ public class OursPrivacyAPI {
 
     // ---------- opt-out ----------
 
-    public synchronized void optOutTracking() {
+    public void optOutTracking() {
         if (!requireInitialized("optOutTracking")) return;
-        // Pending events are discarded — the visitor explicitly asked to stop
-        // being tracked. visitor_id rotates inside optOutAndClear so a later
-        // opt-in starts with a fresh identity.
-        try {
-            mPersistence.optOutAndClear();
-            mPrivacyClearFailed = false;
-        } catch (IllegalStateException e) {
+        final CountDownLatch transition = beginPrivacyTransition();
+        final List<UploadFence.Lease> active;
+        synchronized (this) {
             mPrivacyClearFailed = true;
-            throw e;
+            active = mMessages.revokeUploads();
+            mPersistence.revokeConsentInMemory();
+        }
+        boolean cleared = false;
+        try {
+            mMessages.cancelUploads(active);
+            try {
+                mPersistence.optOutAndClear();
+                cleared = true;
+            } finally {
+                mMobileSession.disable();
+            }
         } finally {
-            mMobileSession.disable();
+            mMessages.awaitUploads(active);
+            synchronized (this) {
+                if (cleared) mPrivacyClearFailed = false;
+            }
+            endPrivacyTransition(transition);
         }
     }
 
-    public synchronized void optInTracking() {
+    public void optInTracking() {
         if (!requireInitialized("optInTracking")) return;
-        if (mPrivacyClearFailed) {
-            mPersistence.optOutAndClear();
-            mPrivacyClearFailed = false;
+        final CountDownLatch transition = beginPrivacyTransition();
+        try {
+            if (mPrivacyClearFailed) {
+                mPersistence.optOutAndClear();
+                mPrivacyClearFailed = false;
+            }
+            mPersistence.setOptOut(false);
+            mMessages.openUploads();
+            mMobileSession.enable();
+            if (mTrackAutomaticEvents && mLifecycleCallbacks != null
+                    && mLifecycleCallbacks.isInForeground()) {
+                onForeground();
+            }
+            track("$opt_in");
+        } finally {
+            endPrivacyTransition(transition);
         }
-        mPersistence.setOptOut(false);
-        mMobileSession.enable();
-        if (mTrackAutomaticEvents && mLifecycleCallbacks != null
-                && mLifecycleCallbacks.isInForeground()) {
-            onForeground();
+    }
+
+    private CountDownLatch beginPrivacyTransition() {
+        boolean interrupted = false;
+        while (true) {
+            CountDownLatch pending;
+            synchronized (this) {
+                pending = mPrivacyTransition;
+                if (pending == null) {
+                    mPrivacyTransition = new CountDownLatch(1);
+                    if (interrupted) Thread.currentThread().interrupt();
+                    return mPrivacyTransition;
+                }
+            }
+            while (true) {
+                try {
+                    pending.await();
+                    break;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
         }
-        track("$opt_in");
+    }
+
+    private void endPrivacyTransition(CountDownLatch transition) {
+        synchronized (this) {
+            if (mPrivacyTransition == transition) mPrivacyTransition = null;
+        }
+        transition.countDown();
     }
 
     public boolean hasOptedOutTracking() {

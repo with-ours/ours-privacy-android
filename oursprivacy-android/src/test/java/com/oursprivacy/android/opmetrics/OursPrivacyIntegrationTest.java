@@ -17,6 +17,10 @@ import android.os.Looper;
 
 import androidx.test.core.app.ApplicationProvider;
 
+import com.oursprivacy.android.util.OfflineMode;
+import com.oursprivacy.android.util.ProxyServerInteractor;
+import com.oursprivacy.android.util.RemoteService;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.After;
@@ -33,6 +37,7 @@ import org.robolectric.util.ReflectionHelpers;
 import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
@@ -42,6 +47,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.nio.charset.StandardCharsets;
+
+import javax.net.ssl.SSLSocketFactory;
 
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
@@ -94,10 +102,349 @@ public class OursPrivacyIntegrationTest {
         } finally {
             mInstances.clear();
             AnalyticsMessages.sTestRemoteService = null;
+            AnalyticsMessages.sTestBatchReady = null;
             Thread.setDefaultUncaughtExceptionHandler(mOriginalExceptionHandler);
             ReflectionHelpers.setStaticField(
                     ExceptionHandler.class, "sInstance", mOriginalSdkExceptionHandler);
         }
+    }
+
+    @Test
+    public void staleSnapshotCannotPostAfterOptOutAndNewVisitorOptIn() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean first = new AtomicBoolean(true);
+        AnalyticsMessages.sTestBatchReady = () -> {
+            if (!first.getAndSet(false)) return;
+            captured.countDown();
+            try {
+                if (!release.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    throw new AssertionError("batch was not released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        };
+        try {
+            op.track("old_visitor_event");
+            op.flush();
+            assertTrue(captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            long started = System.nanoTime();
+            op.optOutTracking();
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            System.out.println("Task11 parked opt-out latency: " + elapsedMs + " ms");
+            assertTrue("opt-out waited for an unregistered snapshot: " + elapsedMs,
+                    elapsedMs < 1_000);
+            op.optInTracking();
+            op.setVisitorId("new-visitor");
+            op.track("new_visitor_event");
+            release.countDown();
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            JSONArray delivered = allCapturedData();
+            assertEquals(0, count(delivered, "old_visitor_event"));
+            assertEquals(1, count(delivered, "new_visitor_event"));
+            assertEquals("new-visitor", find(delivered, "new_visitor_event")
+                    .getString("visitor_id"));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    public void optOutWaitsForActualInFlightTransportCompletion() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch returned = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        mNetwork.blockNextRequest(captured, release);
+        op.track("in_flight_event");
+        op.flush();
+        assertTrue(captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        Thread optOut = new Thread(() -> {
+            try {
+                op.optOutTracking();
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                returned.countDown();
+            }
+        });
+        optOut.start();
+        try {
+            assertFalse("opt-out returned while transport was active",
+                    returned.await(150, TimeUnit.MILLISECONDS));
+            release.countDown();
+            assertTrue(returned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertNull(failure.get());
+            assertEquals(0, queuedCount());
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(1, mNetwork.callCount());
+        } finally {
+            release.countDown();
+            optOut.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
+    public void optOutCancelsRegisteredRequestAndWaitsForItsCompletion() throws Exception {
+        CountDownLatch requestEntered = new CountDownLatch(1);
+        CountDownLatch cancelled = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AnalyticsMessages.sTestRemoteService = new RemoteService() {
+            @Override public boolean isOnline(Context context, OfflineMode mode) { return true; }
+            @Override public void checkIsOursPrivacyBlocked() {}
+            @Override public byte[] performRequest(String endpoint,
+                    ProxyServerInteractor proxy, Map<String, Object> params, String body,
+                    SSLSocketFactory factory) {
+                throw new AssertionError("cancellable request API was bypassed");
+            }
+            @Override public byte[] performRequest(String endpoint,
+                    ProxyServerInteractor proxy, Map<String, Object> params, String body,
+                    SSLSocketFactory factory, RequestCancellation cancellation)
+                    throws IOException {
+                cancellation.setOnCancel(cancelled::countDown);
+                requestEntered.countDown();
+                try {
+                    if (!release.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        throw new IOException("request was not released");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+                throw new IOException("request cancelled");
+            }
+        };
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.track("in_flight_event");
+        op.flush();
+        assertTrue(requestEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        CountDownLatch returned = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread optOut = new Thread(() -> {
+            try {
+                op.optOutTracking();
+            } catch (Throwable e) {
+                failure.set(e);
+            } finally {
+                returned.countDown();
+            }
+        });
+        optOut.start();
+        try {
+            assertTrue(cancelled.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertFalse(returned.await(150, TimeUnit.MILLISECONDS));
+            long releasedAt = System.nanoTime();
+            release.countDown();
+            assertTrue(returned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertNull(failure.get());
+            assertTrue("opt-out completion exceeded one second after transport exit",
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - releasedAt) < 1_000);
+            System.out.println("Task11 active opt-out completion latency: "
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - releasedAt) + " ms");
+            assertEquals(0, queuedCount());
+        } finally {
+            release.countDown();
+            optOut.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
+    public void cancellationHookFailureStillClearsDurableState() throws Exception {
+        CountDownLatch requestEntered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AnalyticsMessages.sTestRemoteService = new RemoteService() {
+            @Override public boolean isOnline(Context context, OfflineMode mode) { return true; }
+            @Override public void checkIsOursPrivacyBlocked() {}
+            @Override public byte[] performRequest(String endpoint,
+                    ProxyServerInteractor proxy, Map<String, Object> params, String body,
+                    SSLSocketFactory factory) {
+                throw new AssertionError("cancellable request API was bypassed");
+            }
+            @Override public byte[] performRequest(String endpoint,
+                    ProxyServerInteractor proxy, Map<String, Object> params, String body,
+                    SSLSocketFactory factory, RequestCancellation cancellation)
+                    throws IOException {
+                cancellation.setOnCancel(() -> {
+                    release.countDown();
+                    throw new IllegalStateException("disconnect failed");
+                });
+                requestEntered.countDown();
+                try {
+                    if (!release.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        throw new IOException("request was not released");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+                throw new IOException("request cancelled");
+            }
+        };
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.track("old_event");
+        op.flush();
+        assertTrue(requestEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        op.optOutTracking();
+        assertTrue(preferences().getBoolean("opt_out", false));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void delayedEnqueueCannotRestoreOldVisitorAfterOptIn() throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        CountDownLatch parked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        op.parkWorkerForTests(parked, release);
+        assertTrue(parked.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        try {
+            JSONObject old = new JSONObject().put("event", "delayed_old")
+                    .put("visitor_id", op.getVisitorId());
+            ReflectionHelpers.<AnalyticsMessages>getField(op, "mMessages").enqueue(old);
+            op.optOutTracking();
+            op.optInTracking();
+            release.countDown();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(0, queuedEventCount("delayed_old"));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    public void rejectionCallbackCanReenterOptOutAfterTransportCompletion() throws Exception {
+        AtomicReference<OursPrivacyAPI> api = new AtomicReference<>();
+        CountDownLatch callbackReturned = new CountDownLatch(1);
+        OursPrivacyAPI op = newApi();
+        api.set(op);
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .onIngestRejected((id, code) -> {
+                    api.get().optOutTracking();
+                    callbackReturned.countDown();
+                }).build());
+        mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
+                + "\"accepted\":0,\"rejected\":[{\"index\":0,\"code\":\"invalid\"}]}");
+        op.track("rejected_event");
+        op.flush();
+        assertTrue(callbackReturned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertTrue(op.hasOptedOutTracking());
+    }
+
+    @Test
+    public void failedClearKeepsOldSnapshotRevokedUntilSuccessfulOptIn() throws Exception {
+        AtomicBoolean failClear = new AtomicBoolean(true);
+        OursPrivacyAPI op = newApi(new FakeClock(),
+                preferencesWithDeferredHeldClear(preferences(), failClear));
+        op.initialize(TOKEN, null);
+        CountDownLatch captured = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AnalyticsMessages.sTestBatchReady = () -> {
+            captured.countDown();
+            try {
+                if (!release.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    throw new AssertionError("batch was not released");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        };
+        try {
+            op.track("old_event");
+            op.flush();
+            assertTrue(captured.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertThrows(IllegalStateException.class, op::optOutTracking);
+            assertTrue(op.hasOptedOutTracking());
+            release.countDown();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(0, mNetwork.callCount());
+            assertThrows(IllegalStateException.class, op::optInTracking);
+            failClear.set(false);
+            AnalyticsMessages.sTestBatchReady = null;
+            op.optInTracking();
+            op.track("fresh_event");
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(0, count(allCapturedData(), "old_event"));
+            assertEquals(1, count(allCapturedData(), "fresh_event"));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    public void proxyResponseCallbackCanReenterOptOut() throws Exception {
+        CountDownLatch callbackReturned = new CountDownLatch(1);
+        AtomicReference<OursPrivacyAPI> api = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AnalyticsMessages.sTestRemoteService = new RemoteService() {
+            @Override public boolean isOnline(Context context, OfflineMode mode) { return true; }
+            @Override public void checkIsOursPrivacyBlocked() {}
+            @Override public byte[] performRequest(String endpoint,
+                    ProxyServerInteractor proxy, Map<String, Object> params, String body,
+                    SSLSocketFactory factory) {
+                proxy.onProxyResponse(endpoint, 200);
+                return "{\"success\":true,\"visitor_id\":\"v\"}"
+                        .getBytes(StandardCharsets.UTF_8);
+            }
+        };
+        OursPrivacyAPI op = newApi();
+        api.set(op);
+        op.initialize(TOKEN, null);
+        op.setServerURL("https://proxy.example", new ProxyServerInteractor() {
+            @Override public Map<String, String> getProxyRequestHeaders() {
+                return java.util.Collections.emptyMap();
+            }
+            @Override public void onProxyResponse(String path, int code) {
+                try {
+                    api.get().optOutTracking();
+                } catch (Throwable e) {
+                    failure.set(e);
+                } finally {
+                    callbackReturned.countDown();
+                }
+            }
+        });
+        op.track("before_proxy_callback");
+        op.flush();
+        assertTrue(callbackReturned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        assertNull(failure.get());
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertTrue(op.hasOptedOutTracking());
+    }
+
+    @Test
+    public void proxyHeaderCallbackCanReenterOptOutBeforeRequestRegistration()
+            throws Exception {
+        CountDownLatch callbackReturned = new CountDownLatch(1);
+        AtomicReference<OursPrivacyAPI> api = new AtomicReference<>();
+        OursPrivacyAPI op = newApi();
+        api.set(op);
+        op.initialize(TOKEN, null);
+        op.setServerURL("https://proxy.example", new ProxyServerInteractor() {
+            @Override public Map<String, String> getProxyRequestHeaders() {
+                api.get().optOutTracking();
+                callbackReturned.countDown();
+                return java.util.Collections.emptyMap();
+            }
+            @Override public void onProxyResponse(String path, int code) {}
+        });
+        op.track("before_proxy_headers");
+        op.flush();
+        assertTrue(callbackReturned.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, mNetwork.callCount());
+        assertTrue(op.hasOptedOutTracking());
     }
 
     private OursPrivacyAPI newApi() {

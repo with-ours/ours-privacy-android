@@ -8,6 +8,7 @@ import android.os.Process;
 
 import com.oursprivacy.android.util.HttpService;
 import com.oursprivacy.android.util.OPLog;
+import com.oursprivacy.android.util.ProxyServerInteractor;
 import com.oursprivacy.android.util.RemoteService;
 import com.oursprivacy.android.util.RemoteService.ServiceUnavailableException;
 
@@ -20,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -41,12 +43,14 @@ import java.util.concurrent.TimeUnit;
      * canonical envelope without making real network calls.
      */
     /* package */ static volatile RemoteService sTestRemoteService;
+    /* package */ static volatile Runnable sTestBatchReady;
 
     private final Context mContext;
     private final OPConfig mConfig;
     private final String mToken;
     private final PersistentIdentity mPersistence;
     private final IngestRejectionListener mRejectionListener;
+    private final UploadFence mUploadFence;
     private final Worker mWorker;
 
     AnalyticsMessages(Context context, OPConfig config, String token,
@@ -56,6 +60,7 @@ import java.util.concurrent.TimeUnit;
         mToken = token;
         mPersistence = persistence;
         mRejectionListener = rejectionListener;
+        mUploadFence = new UploadFence(persistence);
         mWorker = new Worker();
         getPoster().checkIsOursPrivacyBlocked();
     }
@@ -63,8 +68,30 @@ import java.util.concurrent.TimeUnit;
     void enqueue(JSONObject event) {
         final Message m = Message.obtain();
         m.what = ENQUEUE_EVENT;
-        m.obj = event;
+        m.obj = new QueuedEvent(event, mPersistence.queueGeneration());
         mWorker.runMessage(m);
+    }
+
+    List<UploadFence.Lease> revokeUploads() {
+        return mUploadFence.revoke();
+    }
+
+    void openUploads() {
+        mUploadFence.open();
+    }
+
+    void cancelUploads(List<UploadFence.Lease> leases) {
+        for (UploadFence.Lease lease : leases) {
+            try {
+                lease.cancel();
+            } catch (RuntimeException e) {
+                OPLog.w(LOGTAG, "Unable to cancel active request; waiting for completion");
+            }
+        }
+    }
+
+    void awaitUploads(List<UploadFence.Lease> leases) {
+        for (UploadFence.Lease lease : leases) lease.awaitCompletion();
     }
 
     void flushNow() {
@@ -178,8 +205,8 @@ import java.util.concurrent.TimeUnit;
                 try {
                     switch (msg.what) {
                         case ENQUEUE_EVENT: {
-                            final JSONObject event = (JSONObject) msg.obj;
-                            mPersistence.enqueueEvent(event);
+                            final QueuedEvent queued = (QueuedEvent) msg.obj;
+                            mPersistence.enqueueIfAllowed(queued.event, queued.generation);
                             if (mPersistence.getQueueSize() >= mConfig.getBulkUploadLimit()) {
                                 sendBatch();
                             }
@@ -246,14 +273,24 @@ import java.util.concurrent.TimeUnit;
                     OPLog.e(LOGTAG, "Failed to build envelope; will retry batch", e);
                     return;
                 }
+                final Runnable batchReady = sTestBatchReady;
+                if (batchReady != null) batchReady.run();
 
+                final String endpoint = mConfig.getEventsEndpoint();
+                final ProxyServerInteractor interactor = mConfig.getProxyServerInteractor();
+                final DeferredProxy proxy = interactor == null ? null
+                        : new DeferredProxy(interactor);
+                final UploadFence.Lease lease = mUploadFence.begin(snapshot.generation);
+                if (lease == null) return;
                 try {
-                    final byte[] response = poster.performRequest(
-                            mConfig.getEventsEndpoint(),
-                            mConfig.getProxyServerInteractor(),
-                            null,
-                            body,
-                            mConfig.getSSLSocketFactory());
+                    final byte[] response;
+                    try {
+                        response = poster.performRequest(endpoint, proxy, null, body,
+                                mConfig.getSSLSocketFactory(), lease.cancellation());
+                    } finally {
+                        lease.finishTransport();
+                        if (proxy != null) proxy.deliver();
+                    }
                     if (response == null) {
                         OPLog.v(LOGTAG, "No response from ingest endpoint; will retry on next flush");
                         return;
@@ -349,6 +386,45 @@ import java.util.concurrent.TimeUnit;
             envelope.put("is_manually_set_id", mPersistence.isManuallySetId());
             envelope.put("data", batch);
             return envelope;
+        }
+    }
+
+    private static final class QueuedEvent {
+        final JSONObject event;
+        final String generation;
+
+        QueuedEvent(JSONObject event, String generation) {
+            this.event = event;
+            this.generation = generation;
+        }
+    }
+
+    private static final class DeferredProxy implements ProxyServerInteractor {
+        private final ProxyServerInteractor delegate;
+        private final Map<String, String> headers;
+        private final List<Integer> responses = new ArrayList<>();
+        private final List<String> paths = new ArrayList<>();
+
+        DeferredProxy(ProxyServerInteractor delegate) {
+            this.delegate = delegate;
+            this.headers = delegate.getProxyRequestHeaders();
+        }
+
+        @Override
+        public Map<String, String> getProxyRequestHeaders() {
+            return headers;
+        }
+
+        @Override
+        public void onProxyResponse(String apiPath, int responseCode) {
+            paths.add(apiPath);
+            responses.add(responseCode);
+        }
+
+        void deliver() {
+            for (int i = 0; i < responses.size(); i++) {
+                delegate.onProxyResponse(paths.get(i), responses.get(i));
+            }
         }
     }
 

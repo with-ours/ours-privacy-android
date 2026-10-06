@@ -113,6 +113,11 @@ import java.util.concurrent.Future;
         }
     }
 
+    synchronized void revokeConsentInMemory() {
+        ensureLoaded();
+        mOptOut = true;
+    }
+
     // ---------- default-property bags ----------
 
     synchronized JSONObject getDefaultEventProperties() {
@@ -260,6 +265,20 @@ import java.util.concurrent.Future;
         } catch (JSONException e) {
             throw new IllegalStateException("Queued events are not valid JSON", e);
         }
+    }
+
+    synchronized boolean canUpload(String generation) {
+        ensureLoaded();
+        return !getOptOut() && generation.equals(mQueueGeneration);
+    }
+
+    synchronized String queueGeneration() {
+        ensureLoaded();
+        return mQueueGeneration;
+    }
+
+    synchronized void enqueueIfAllowed(JSONObject event, String generation) {
+        if (canUpload(generation)) enqueueEvent(event);
     }
 
     synchronized boolean hasIndexedIngestMode(String token) {
