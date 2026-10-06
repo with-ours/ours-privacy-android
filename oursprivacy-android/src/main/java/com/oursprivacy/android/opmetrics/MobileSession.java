@@ -194,9 +194,11 @@ final class MobileSession {
             if (!state.firstOpenAccepted && !hasPending(state, "$mobile_first_open")) {
                 facts.add(fact("$mobile_first_open", state, nowWall, null));
             }
-            if (state.appObserved && (state.appVersion != null || state.appBuild != null)
-                    && (!equal(state.appVersion, appVersion)
-                    || !equal(state.appBuild, appBuild))) {
+            if (state.appObserved
+                    && ((state.appVersion != null && appVersion != null
+                    && !equal(state.appVersion, appVersion))
+                    || (state.appBuild != null && appBuild != null
+                    && !equal(state.appBuild, appBuild)))) {
                 JSONObject properties = new JSONObject();
                 if (state.appVersion != null) {
                     put(properties, "previous_app_version", state.appVersion);
@@ -207,8 +209,8 @@ final class MobileSession {
                 facts.add(fact("$mobile_app_update", state, nowWall, properties));
             }
             state.appObserved = true;
-            state.appVersion = appVersion;
-            state.appBuild = appBuild;
+            if (appVersion != null) state.appVersion = appVersion;
+            if (appBuild != null) state.appBuild = appBuild;
             facts.add(fact("$mobile_app_open", state, nowWall, null));
             if (!state.sessionStartEmitted) {
                 facts.add(fact("$mobile_session_start", state, nowWall, null));
@@ -406,6 +408,15 @@ final class MobileSession {
             facts.add(MobileFact.fromJson(value));
         }
         return immutable(facts);
+    }
+
+    synchronized boolean hasPendingFact(String id) {
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            JSONObject value = state.pendingFacts.optJSONObject(i);
+            if (value != null && id.equals(value.optString("id"))) return true;
+        }
+        return false;
     }
 
     private boolean reconcileClock(PersistentIdentity.MobileState state, long nowWall,

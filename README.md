@@ -230,7 +230,7 @@ With `trackAutomaticEvents(true)`, the SDK emits these lifecycle facts:
 | `$mobile_session_start` | First tracked foreground entry in a session | None |
 | `$mobile_session_engagement` | Positive foreground-time checkpoint, screen change, or background | `engagement_duration_ms`; `screen_name` when a tracked screen was active |
 | `$mobile_session_end` | Best effort when a session expires or is explicitly ended | None |
-| `$mobile_app_update` | First tracked open after a previously known app version/build changes; newly available metadata establishes a baseline without an update | `previous_app_version`, `previous_app_build` when known |
+| `$mobile_app_update` | First tracked open after a known version or build changes; newly available or temporarily missing metadata alone does not trigger an update | `previous_app_version`, `previous_app_build` when known |
 | `$mobile_screen_view` | Explicit `trackScreen(name)` call | `screen_name` |
 
 Sessions expire after 30 minutes of inactivity. Engagement durations are integer milliseconds and a screen change assigns the preceding positive delta to the previous screen. Manual `track()` and `trackScreen()` still work when automatic tracking is off. Full `optOutTracking()` suppresses all of them and rotates `visitor_id`; a later opt-in starts a new session under that visitor.

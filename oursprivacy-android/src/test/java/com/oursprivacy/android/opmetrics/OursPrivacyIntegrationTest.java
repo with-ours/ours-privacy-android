@@ -1213,6 +1213,131 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void failedFirstOpenTransferHoldsOptInAndLaterEventsUntilOrderedRetry()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failQueueCommit = new AtomicBoolean();
+        OursPrivacyAPI op = newApi(clock, preferencesWithQueueCommitFailure(failQueueCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        failQueueCommit.set(true);
+
+        op.optInTracking();
+        assertEquals(0, queuedCount());
+        assertEquals(3, mobileState().getJSONArray("pending_facts").length());
+        String visitor = op.getVisitorId();
+        String sid = mobileState().getString("sid");
+        String occurredAt = MobileSession.utc(clock.wall);
+
+        op.trackScreen("Schedule");
+        op.track("appointment_booked");
+        op.identify(OursPrivacyUserProperties.builder()
+                .externalId("synthetic-patient").build());
+        assertEquals(0, queuedCount());
+        assertEquals(4, mobileState().getJSONArray("pending_facts").length());
+
+        clock.advance(2_000);
+        failQueueCommit.set(false);
+        op.track("retry_trigger");
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(8, queue.length());
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start", "$opt_in", "$mobile_screen_view",
+                "appointment_booked", "$identify", "retry_trigger"),
+                eventNames(queue));
+        assertEquals(visitor, queue.getJSONObject(3).getString("visitor_id"));
+        assertEquals(sid, queue.getJSONObject(3).getJSONObject("defaultProperties")
+                .getString("sid"));
+        assertEquals(occurredAt, queue.getJSONObject(3)
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+        for (int i = 0; i < 4; i++) {
+            assertEquals(visitor, queue.getJSONObject(i).getString("visitor_id"));
+            assertEquals(sid, queue.getJSONObject(i).getJSONObject("defaultProperties")
+                    .getString("sid"));
+        }
+        assertEquals(0, mobileState().getJSONArray("pending_facts").length());
+
+        callbacks.onActivityResumed(null);
+        assertEquals(8, queuedCount());
+        assertEquals(1, queuedEventCount("$mobile_first_open"));
+        assertEquals(1, queuedEventCount("$opt_in"));
+    }
+
+    @Test
+    public void futureFirstOpenRemainsPendingWithHeldOptInUntilEligible()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failQueueCommit = new AtomicBoolean();
+        OursPrivacyAPI op = newApi(clock, preferencesWithQueueCommitFailure(failQueueCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        failQueueCommit.set(true);
+        op.optInTracking();
+        String firstId = mobileState().getJSONArray("pending_facts")
+                .getJSONObject(0).getString("id");
+
+        clock.wall -= 10 * 60_000;
+        failQueueCommit.set(false);
+        op.flush();
+        assertEquals(0, queuedCount());
+        assertEquals(firstId, mobileState().getJSONArray("pending_facts")
+                .getJSONObject(0).getString("id"));
+
+        clock.wall += 10 * 60_000;
+        op.track("retry_trigger");
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start", "$opt_in", "retry_trigger"), eventNames(queue));
+    }
+
+    @Test
+    public void heldOptInKeepsCapturedVisitorAndSessionAcrossIdentityChange()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        AtomicBoolean failQueueCommit = new AtomicBoolean();
+        OursPrivacyAPI op = newApi(clock, preferencesWithQueueCommitFailure(failQueueCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.optOutTracking();
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        failQueueCommit.set(true);
+        op.optInTracking();
+        String originalVisitor = op.getVisitorId();
+        String originalSid = mobileState().getString("sid");
+        String originalOccurredAt = MobileSession.utc(clock.wall);
+
+        op.setVisitorId("new-visitor");
+        assertEquals(0, queuedCount());
+        assertEquals("new-visitor", op.getVisitorId());
+
+        clock.advance(2_000);
+        failQueueCommit.set(false);
+        op.track("retry_trigger");
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start", "$opt_in", "$mobile_session_end",
+                "$mobile_session_start", "retry_trigger"), eventNames(queue));
+        JSONObject held = queue.getJSONObject(3);
+        assertEquals(originalVisitor, held.getString("visitor_id"));
+        assertEquals(originalSid, held.getJSONObject("defaultProperties").getString("sid"));
+        assertEquals(originalOccurredAt, held.getJSONObject("defaultProperties")
+                .getString("mobile_occurred_at"));
+        assertEquals("new-visitor", queue.getJSONObject(6).getString("visitor_id"));
+        assertNotEquals(originalSid, queue.getJSONObject(6)
+                .getJSONObject("defaultProperties").getString("sid"));
+    }
+
+    @Test
     public void failedMobileCommitCannotPreventPublicOptOutOrClearPendingFacts()
             throws Exception {
         AtomicBoolean failMobileCommit = new AtomicBoolean();
@@ -1628,6 +1753,14 @@ public class OursPrivacyIntegrationTest {
 
     private int queuedCount() throws Exception {
         return new JSONArray(preferences().getString("event_queue", "[]")).length();
+    }
+
+    private static List<String> eventNames(JSONArray queue) throws Exception {
+        List<String> names = new ArrayList<>();
+        for (int i = 0; i < queue.length(); i++) {
+            names.add(queue.getJSONObject(i).getString("event"));
+        }
+        return names;
     }
 
     private SharedPreferences preferencesWithAcknowledgmentCommitFailure(AtomicBoolean fail) {

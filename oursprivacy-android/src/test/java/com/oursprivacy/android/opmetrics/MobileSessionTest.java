@@ -317,6 +317,84 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void newlyKnownVersionDoesNotUpdateUnchangedKnownBuild() throws Exception {
+        MobileSession first = session(null, "10");
+        first.foreground(true);
+        acceptFirstOpen(first);
+        first.background();
+        clock.advance(1_000);
+
+        MobileSession versionKnown = recreated("1.0", "10");
+        assertEquals(List.of("$mobile_app_open"), names(versionKnown.foreground(true)));
+        versionKnown.background();
+        clock.advance(1_000);
+
+        MobileSession buildChanged = recreated("1.0", "11");
+        List<MobileSession.MobileFact> facts = buildChanged.foreground(true);
+        assertEquals(List.of("$mobile_app_update", "$mobile_app_open"), names(facts));
+        assertEquals("1.0", facts.get(0).eventProperties()
+                .getString("previous_app_version"));
+        assertEquals("10", facts.get(0).eventProperties()
+                .getString("previous_app_build"));
+    }
+
+    @Test
+    public void missingObservationKeepsKnownVersionAndBuildBaseline() throws Exception {
+        MobileSession first = session("1.0", "10");
+        first.foreground(true);
+        acceptFirstOpen(first);
+        first.background();
+        clock.advance(1_000);
+
+        MobileSession missing = recreated(null, null);
+        assertEquals(List.of("$mobile_app_open"), names(missing.foreground(true)));
+        missing.background();
+        clock.advance(1_000);
+
+        MobileSession unchanged = recreated("1.0", "10");
+        assertEquals(List.of("$mobile_app_open"), names(unchanged.foreground(true)));
+        unchanged.background();
+        clock.advance(1_000);
+
+        List<MobileSession.MobileFact> changed = recreated("2.0", "10").foreground(true);
+        assertEquals(List.of("$mobile_app_update", "$mobile_app_open"), names(changed));
+        assertEquals("1.0", changed.get(0).eventProperties()
+                .getString("previous_app_version"));
+        assertEquals("10", changed.get(0).eventProperties()
+                .getString("previous_app_build"));
+    }
+
+    @Test
+    public void versionOnlyChangeUsesPreviouslyKnownVersion() throws Exception {
+        MobileSession first = session("1.0", null);
+        first.foreground(true);
+        acceptFirstOpen(first);
+        first.background();
+        clock.advance(1_000);
+
+        List<MobileSession.MobileFact> changed = recreated("2.0", null).foreground(true);
+        assertEquals(List.of("$mobile_app_update", "$mobile_app_open"), names(changed));
+        assertEquals("1.0", changed.get(0).eventProperties()
+                .getString("previous_app_version"));
+        assertFalse(changed.get(0).eventProperties().has("previous_app_build"));
+    }
+
+    @Test
+    public void buildOnlyChangeUsesPreviouslyKnownBuild() throws Exception {
+        MobileSession first = session(null, "10");
+        first.foreground(true);
+        acceptFirstOpen(first);
+        first.background();
+        clock.advance(1_000);
+
+        List<MobileSession.MobileFact> changed = recreated(null, "11").foreground(true);
+        assertEquals(List.of("$mobile_app_update", "$mobile_app_open"), names(changed));
+        assertEquals("10", changed.get(0).eventProperties()
+                .getString("previous_app_build"));
+        assertFalse(changed.get(0).eventProperties().has("previous_app_version"));
+    }
+
+    @Test
     public void processRecreationKeepsSessionAndOriginalUtcStartAcrossMidnight()
             throws Exception {
         clock.wall = 1_759_708_795_000L;

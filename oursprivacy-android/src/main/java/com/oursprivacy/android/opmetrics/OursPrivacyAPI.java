@@ -14,6 +14,9 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.Future;
 
 /**
@@ -59,6 +62,17 @@ public class OursPrivacyAPI {
     private JSONObject mBaseDefaultProperties;
     private MobileSession mMobileSession;
     private OursPrivacyActivityLifecycleCallbacks mLifecycleCallbacks;
+    private final Deque<PendingTrack> mPendingTracks = new ArrayDeque<>();
+
+    private static final class PendingTrack {
+        final JSONObject item;
+        final String afterFactId;
+
+        PendingTrack(JSONObject item, String afterFactId) {
+            this.item = item;
+            this.afterFactId = afterFactId;
+        }
+    }
 
     /**
      * Construct an SDK instance. Call {@link #initialize(String, OursPrivacyInitOptions)}
@@ -318,6 +332,7 @@ public class OursPrivacyAPI {
         // being tracked. visitor_id rotates inside optOutAndClear so a later
         // opt-in starts with a fresh identity.
         mPersistence.optOutAndClear();
+        mPendingTracks.clear();
         mMobileSession.disable();
     }
 
@@ -383,6 +398,7 @@ public class OursPrivacyAPI {
         // Best-effort flush: pending events get one chance to land before
         // persistence is wiped on the calling thread.
         mMessages.flushNow();
+        mPendingTracks.clear();
         mMobileSession.rotate();
         mPersistence.resetPreservingMobileSession(mToken);
         mMobileSession.continueAfterIdentityChange();
@@ -504,6 +520,7 @@ public class OursPrivacyAPI {
     private void drainMobileFacts() {
         if (mMobileSession == null || mPersistence.getOptOut()) return;
         for (MobileSession.MobileFact fact : mMobileSession.pendingFacts()) {
+            drainReadyTracks();
             try {
                 Track.Context context = buildTrackContext(fact.visitorId(), fact.snapshot(),
                         new JSONObject());
@@ -518,9 +535,29 @@ public class OursPrivacyAPI {
                 return;
             }
         }
+        drainReadyTracks();
     }
 
     private void enqueueTrackItem(JSONObject item) {
+        // A held manual item follows eligible facts already captured but precedes later mobile facts.
+        List<MobileSession.MobileFact> facts = mMobileSession.pendingFacts();
+        String afterFactId = facts.isEmpty() ? null : facts.get(facts.size() - 1).id();
+        mPendingTracks.addLast(new PendingTrack(item, afterFactId));
+        drainMobileFacts();
+    }
+
+    private void drainReadyTracks() {
+        while (!mPendingTracks.isEmpty()) {
+            PendingTrack next = mPendingTracks.peekFirst();
+            if (next.afterFactId != null && mMobileSession.hasPendingFact(next.afterFactId)) {
+                return;
+            }
+            enqueueTrackItemDirect(next.item);
+            mPendingTracks.removeFirst();
+        }
+    }
+
+    private void enqueueTrackItemDirect(JSONObject item) {
         mPersistence.enqueueEvent(item);
         if (mPersistence.getQueueSize() >= mConfig.getBulkUploadLimit()) {
             mMessages.flushNow();
