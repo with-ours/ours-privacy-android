@@ -43,7 +43,7 @@ import java.lang.ref.WeakReference;
     @Override
     public void onActivityPaused(final Activity activity) {
         if (!mPaused) {
-            pauseTimePoint = mMpInstance.captureMobileTimePoint();
+            pauseTimePoint = mMpInstance.captureMobilePausePoint();
         }
         mPaused = true;
 

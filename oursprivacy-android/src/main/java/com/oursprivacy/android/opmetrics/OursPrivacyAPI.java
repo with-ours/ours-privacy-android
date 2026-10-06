@@ -410,6 +410,10 @@ public class OursPrivacyAPI {
         return mMobileSession == null ? null : mMobileSession.captureTimePoint();
     }
 
+    synchronized MobileSession.TimePoint captureMobilePausePoint() {
+        return mMobileSession == null ? null : mMobileSession.capturePausePoint();
+    }
+
     synchronized void onBackground(MobileSession.TimePoint point) {
         onBackground(point, null);
     }

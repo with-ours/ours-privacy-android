@@ -28,10 +28,18 @@ final class MobileSession {
     static final class TimePoint {
         final long wallMillis;
         final long elapsedMillis;
+        final String sid;
+        final long lastActive;
 
         TimePoint(long wallMillis, long elapsedMillis) {
+            this(wallMillis, elapsedMillis, null, 0);
+        }
+
+        TimePoint(long wallMillis, long elapsedMillis, String sid, long lastActive) {
             this.wallMillis = wallMillis;
             this.elapsedMillis = elapsedMillis;
+            this.sid = sid;
+            this.lastActive = lastActive;
         }
     }
 
@@ -216,6 +224,13 @@ final class MobileSession {
         return new TimePoint(clock.wallMillis(), clock.elapsedMillis());
     }
 
+    synchronized TimePoint capturePausePoint() {
+        long nowWall = clock.wallMillis();
+        long nowElapsed = clock.elapsedMillis();
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        return new TimePoint(nowWall, nowElapsed, state.sid, state.lastActive);
+    }
+
     synchronized MobileSnapshot snapshotAt(TimePoint point) {
         if (disabled) return null;
         return snapshot(identity.getMobileState(token), point.wallMillis);
@@ -230,6 +245,10 @@ final class MobileSession {
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         long nowWall = point.wallMillis;
         long nowElapsed = point.elapsedMillis;
+        if (point.sid != null && point.sid.equals(state.sid)) {
+            // A track during pause debounce cannot move the foreground end or inactivity boundary.
+            state.lastActive = point.lastActive;
+        }
         List<MobileFact> facts = new ArrayList<>();
         reconcileClock(state, nowWall, nowElapsed, facts, true);
         accrue(state, nowElapsed);
