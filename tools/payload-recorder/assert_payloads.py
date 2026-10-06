@@ -33,9 +33,10 @@ def validate(directory: Path, version: str) -> None:
     assert by_name["view_item"]["eventProperties"]["sku"] == "ABC-001"
     assert by_name["view_item"]["userProperties"]["phone_number"] == "+1-555-0100"
     deep_link = by_name["$deep_link_opened"]
-    assert deep_link["eventProperties"]["url"] == (
-        "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
-    )
+    event_properties = deep_link["eventProperties"]
+    assert event_properties is None or "url" not in event_properties
+    assert "https://example.com/landing" not in json.dumps(deep_link)
+    assert "patient_email" not in json.dumps(deep_link)
     assert deep_link["defaultProperties"]["utm_source"] == "demo"
     assert deep_link["defaultProperties"]["utm_medium"] == "android"
     assert deep_link["defaultProperties"]["gclid"] == "demoGclid"

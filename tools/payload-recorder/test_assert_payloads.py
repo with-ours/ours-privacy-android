@@ -44,9 +44,7 @@ class PayloadValidationTest(unittest.TestCase):
                 "event": "$deep_link_opened",
                 "visitor_id": "visitor",
                 "distinct_id": "five",
-                "eventProperties": {
-                    "url": "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
-                },
+                "eventProperties": None,
                 "userProperties": None,
                 "defaultProperties": {
                     "version": version,
@@ -96,6 +94,34 @@ class PayloadValidationTest(unittest.TestCase):
             envelope["data"] = [
                 event for event in envelope["data"] if event["event"] != "$deep_link_opened"
             ]
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_raw_url_on_deep_link_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            deep_link = next(
+                event for event in envelope["data"] if event["event"] == "$deep_link_opened"
+            )
+            deep_link["eventProperties"] = {
+                "url": "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
+            }
+            path.write_text(json.dumps(envelope))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_patient_field_on_deep_link_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            path = Path(directory) / "001_ingest.json"
+            envelope = json.loads(path.read_text())
+            deep_link = next(
+                event for event in envelope["data"] if event["event"] == "$deep_link_opened"
+            )
+            deep_link["eventProperties"] = {"patient_email": "secret"}
             path.write_text(json.dumps(envelope))
             with self.assertRaises(AssertionError):
                 validate(Path(directory), "2.0.0")

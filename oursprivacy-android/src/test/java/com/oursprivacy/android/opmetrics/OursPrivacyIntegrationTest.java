@@ -26,6 +26,7 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
+import org.robolectric.shadows.ShadowLog;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -237,6 +238,59 @@ public class OursPrivacyIntegrationTest {
         assertEquals("android", deepLink.getJSONObject("defaultProperties")
                 .getString("mobile_platform"));
         assertFalse(booking.has("time"));
+    }
+
+    @Test
+    public void initialDeepLinkOmitsRawUrlAndPatientParameterFromTelemetry()
+            throws Exception {
+        OursPrivacyAPI op = newApi();
+        ShadowLog.clear();
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true)
+                .initialURL("https://example.test/visit?utm_source=campaign"
+                        + "&ours_visitor_id=visitor-from-web&patient_email=secret")
+                .build());
+        op.onForeground();
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONArray data = allCapturedData();
+        JSONObject opened = find(data, "$deep_link_opened");
+        assertEquals("visitor-from-web", opened.getString("visitor_id"));
+        assertEquals("campaign", opened.getJSONObject("defaultProperties")
+                .getString("utm_source"));
+        assertTrue(opened.isNull("eventProperties"));
+        assertFalse(data.toString().contains("https://example.test"));
+        assertFalse(data.toString().contains("patient_email"));
+        assertFalse(data.toString().contains("secret"));
+        JSONObject automaticDefaults = find(data, "$mobile_first_open")
+                .getJSONObject("defaultProperties");
+        assertFalse(automaticDefaults.has("advertising_id"));
+        assertFalse(automaticDefaults.has("gaid"));
+        assertFalse(automaticDefaults.has("patient_email"));
+        for (ShadowLog.LogItem log : ShadowLog.getLogs()) {
+            assertFalse(log.msg.contains("https://example.test"));
+            assertFalse(log.msg.contains("patient_email"));
+        }
+    }
+
+    @Test
+    public void explicitDeepLinkOmitsRawUrlAndPatientParameterFromTelemetry()
+            throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.trackDeepLink("https://example.test/visit?utm_source=campaign"
+                + "&ours_visitor_id=visitor-from-web&patient_email=secret");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        JSONObject opened = find(allCapturedData(), "$deep_link_opened");
+        assertEquals("visitor-from-web", opened.getString("visitor_id"));
+        assertEquals("campaign", opened.getJSONObject("defaultProperties")
+                .getString("utm_source"));
+        assertTrue(opened.isNull("eventProperties"));
+        assertFalse(opened.toString().contains("https://example.test"));
+        assertFalse(opened.toString().contains("patient_email"));
     }
 
     @Test

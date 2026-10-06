@@ -127,7 +127,7 @@ public class OursPrivacyAPI {
         drainMobileFacts();
         if (options != null && options.getInitialURL() != null
                 && !options.getInitialURL().isEmpty() && !mPersistence.getOptOut()) {
-            track("$deep_link_opened", deepLinkProperties(options.getInitialURL()));
+            track("$deep_link_opened", (JSONObject) null);
         }
 
         emitFirstLaunchAndUpdateEventsIfNeeded();
@@ -239,7 +239,7 @@ public class OursPrivacyAPI {
         if (mPersistence.getOptOut()) return;
 
         applyAttribution(Attribution.parseAttributionFromURL(url));
-        track("$deep_link_opened", deepLinkProperties(url));
+        track("$deep_link_opened", (JSONObject) null);
     }
 
     private void applyAttribution(Attribution.Result attribution) {
@@ -256,14 +256,6 @@ public class OursPrivacyAPI {
             Track.mergeOnto(replacement, attribution.clickIds);
         } catch (JSONException ignored) {}
         mPersistence.replaceAttributionDefaultProperties(replacement);
-    }
-
-    private static JSONObject deepLinkProperties(String url) {
-        JSONObject properties = new JSONObject();
-        try {
-            properties.put("url", url);
-        } catch (JSONException ignored) {}
-        return properties;
     }
 
     // ---------- identity ----------

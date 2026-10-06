@@ -255,9 +255,11 @@ Replaces the auto-generated `visitor_id` and sets `is_manually_set_id: true` on 
 
 #### `void trackDeepLink(String url)`
 
-Parses `url` for the six canonical UTM keys, twenty-six click-ID keys, and the `ours_visitor_id` stitch parameter. Fires `$deep_link_opened` with the original URL, replaces the attribution overlay (so stale UTMs don't leak between links), and — if `ours_visitor_id` is present — calls `setVisitorId()`.
+Parses `url` for the six canonical UTM keys, twenty-six click-ID keys, and the `ours_visitor_id` stitch parameter. Fires `$deep_link_opened` without the original URL, replaces the attribution overlay (so stale UTMs don't leak between links), and — if `ours_visitor_id` is present — calls `setVisitorId()`.
 
 Attribution overlays live in `defaultProperties`, not `userProperties`.
+
+**Migration:** `$deep_link_opened` no longer includes `eventProperties.url`. Update queries that read that property to use the allowlisted attribution fields in `defaultProperties`. Supply only PHI-free UTM and click-ID values and an opaque `ours_visitor_id`; use stable, PHI-free labels for `trackScreen()`, never route URLs or patient details.
 
 ### Privacy Controls
 
