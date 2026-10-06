@@ -130,22 +130,22 @@ public class OursPrivacyAPI {
                             mBaseDefaultProperties.optString("app_version", null),
                             mBaseDefaultProperties.optString("app_build", null), mMobileClock);
             mInitialized = true;
-            defaultOptOut = options != null
-                    && Boolean.TRUE.equals(options.getOptedOutByDefault())
-                    && !mPersistence.hasOptOutFlag();
-            if (defaultOptOut) {
-                mMessages.revokeUploads();
-                mPersistence.revokeConsentInMemory();
-            } else {
-                try {
+            try {
+                defaultOptOut = options != null
+                        && Boolean.TRUE.equals(options.getOptedOutByDefault())
+                        && !mPersistence.hasOptOutFlag();
+                if (defaultOptOut) {
+                    mMessages.revokeUploads();
+                    mPersistence.revokeConsentInMemory();
+                } else {
                     finishInitialization(options);
-                } catch (RuntimeException | Error e) {
-                    mInitializationFailure = e;
-                    throw e;
-                } finally {
                     mInitializationComplete.countDown();
+                    return;
                 }
-                return;
+            } catch (RuntimeException | Error e) {
+                mInitializationFailure = e;
+                mInitializationComplete.countDown();
+                throw e;
             }
         }
         try {

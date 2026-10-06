@@ -27,6 +27,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.MockedConstruction;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
@@ -52,6 +53,8 @@ import java.nio.charset.StandardCharsets;
 import javax.net.ssl.SSLSocketFactory;
 
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.spy;
 
 /**
@@ -454,6 +457,39 @@ public class OursPrivacyIntegrationTest {
             finishInitialization.countDown();
             init.join(IDLE_TIMEOUT_MS);
             optIn.join(IDLE_TIMEOUT_MS);
+        }
+    }
+
+    @Test
+    public void failedInitialUploadRevocationReleasesOptInWaiter() throws Exception {
+        IllegalStateException revocationFailure = new IllegalStateException("revocation failed");
+        try (MockedConstruction<AnalyticsMessages> ignored = mockConstruction(
+                AnalyticsMessages.class,
+                (messages, context) -> doThrow(revocationFailure)
+                        .when(messages).revokeUploads())) {
+            OursPrivacyAPI op = newApi();
+            IllegalStateException initFailure = assertThrows(IllegalStateException.class,
+                    () -> op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                            .optedOutByDefault(true).build()));
+            assertSame(revocationFailure, initFailure);
+
+            AtomicReference<Throwable> optInFailure = new AtomicReference<>();
+            CountDownLatch optInReturned = new CountDownLatch(1);
+            Thread optIn = new Thread(() -> {
+                try {
+                    op.optInTracking();
+                } catch (Throwable e) {
+                    optInFailure.set(e);
+                } finally {
+                    optInReturned.countDown();
+                }
+            });
+            optIn.setDaemon(true);
+            optIn.start();
+            assertTrue("opt-in waited forever after failed initialization",
+                    optInReturned.await(1_000, TimeUnit.MILLISECONDS));
+            assertTrue(optInFailure.get() instanceof IllegalStateException);
+            assertSame(revocationFailure, optInFailure.get().getCause());
         }
     }
 
