@@ -369,6 +369,7 @@ public class OursPrivacyAPI {
                 cleared = true;
             } finally {
                 mMobileSession.disable();
+                if (mLifecycleCallbacks != null) mLifecycleCallbacks.onTrackingDisabled();
             }
         } finally {
             mMessages.awaitUploads(active);
@@ -406,9 +407,8 @@ public class OursPrivacyAPI {
                 mPersistence.setOptOut(false);
                 mMessages.openUploads();
                 mMobileSession.enable();
-                if (mTrackAutomaticEvents && mLifecycleCallbacks != null
-                        && mLifecycleCallbacks.isInForeground()) {
-                    onForeground();
+                if (mTrackAutomaticEvents && mLifecycleCallbacks != null) {
+                    mLifecycleCallbacks.onTrackingEnabled();
                 }
                 track("$opt_in");
             }

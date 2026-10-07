@@ -21,6 +21,7 @@ import java.lang.ref.WeakReference;
     private Runnable check;
     private Runnable checkpoint;
     private long nextCheckpointElapsed = -1;
+    private long checkpointRetryDelayMs = CHECK_DELAY;
     private MobileSession.TimePoint pauseTimePoint;
     private JSONObject pendingLegacySessionProperties;
     private boolean backgroundPending;
@@ -111,6 +112,7 @@ import java.lang.ref.WeakReference;
             }
             mIsForeground = true;
             sStartSessionTime = (double) System.currentTimeMillis();
+            checkpointRetryDelayMs = CHECK_DELAY;
             nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
         }
         scheduleCheckpoint();
@@ -144,11 +146,13 @@ import java.lang.ref.WeakReference;
                 if (!mIsForeground || mPaused) return;
                 try {
                     mMpInstance.onCheckpoint();
+                    checkpointRetryDelayMs = CHECK_DELAY;
                     nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
                             + MobileSession.ENGAGEMENT_THRESHOLD_MS;
                 } catch (PersistentIdentity.MobileStatePersistenceException e) {
                     nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                            + CHECK_DELAY;
+                            + checkpointRetryDelayMs;
+                    checkpointRetryDelayMs = Math.min(30_000, checkpointRetryDelayMs * 2);
                     OPLog.w("OursPrivacyActivityLifecycleCallbacks",
                             "Unable to record checkpoint; will retry", e);
                 }
@@ -165,6 +169,27 @@ import java.lang.ref.WeakReference;
 
     protected boolean isInForeground() {
         return mIsForeground;
+    }
+
+    void onTrackingDisabled() {
+        if (check != null) mHandler.removeCallbacks(check);
+        if (checkpoint != null) mHandler.removeCallbacks(checkpoint);
+        mIsForeground = false;
+        backgroundPending = false;
+        pauseTimePoint = null;
+        pendingLegacySessionProperties = null;
+        nextCheckpointElapsed = -1;
+        checkpointRetryDelayMs = CHECK_DELAY;
+    }
+
+    void onTrackingEnabled() {
+        if (mPaused) return;
+        mMpInstance.onForeground();
+        mIsForeground = true;
+        sStartSessionTime = (double) System.currentTimeMillis();
+        checkpointRetryDelayMs = CHECK_DELAY;
+        nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
+        scheduleCheckpoint();
     }
 
     private final OursPrivacyAPI mMpInstance;

@@ -10,6 +10,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -57,6 +59,7 @@ import java.util.concurrent.Future;
 
     private JSONArray mEventQueue = new JSONArray();
     private String mQueueGeneration = UUID.randomUUID().toString();
+    private final Map<String, String> mCommittedMobileStates = new HashMap<>();
 
     PersistentIdentity(Future<SharedPreferences> prefsLoader) {
         this(prefsLoader, System::currentTimeMillis);
@@ -389,6 +392,7 @@ import java.util.concurrent.Future;
             mOptOut = true;
             throw new IllegalStateException("Failed to persist reset");
         }
+        mCommittedMobileStates.clear();
     }
 
     /**
@@ -421,6 +425,7 @@ import java.util.concurrent.Future;
         clearHeldTracks(editor);
         editor.putBoolean(KEY_OPT_OUT, true);
         if (!editor.commit()) throw new IllegalStateException("Failed to persist opt-out");
+        mCommittedMobileStates.clear();
     }
 
     static final class MobileState {
@@ -448,7 +453,11 @@ import java.util.concurrent.Future;
         SharedPreferences prefs = preferences();
         MobileState state = new MobileState();
         if (prefs == null) return state;
-        JSONObject stored = readJsonObject(prefs, mobileKey(token));
+        String key = mobileKey(token);
+        if (!mCommittedMobileStates.containsKey(key)) {
+            mCommittedMobileStates.put(key, prefs.getString(key, null));
+        }
+        JSONObject stored = readJsonObject(mCommittedMobileStates.get(key), key);
         state.sid = stored.optString("sid", null);
         state.startedAt = stored.optLong("started_at");
         state.lastActive = stored.optLong("last_active");
@@ -466,13 +475,23 @@ import java.util.concurrent.Future;
 
     synchronized void saveMobileState(String token, MobileState state) {
         ensureLoaded();
-        final SharedPreferences.Editor editor = editor();
-        if (editor == null) {
+        SharedPreferences prefs = preferences();
+        if (prefs == null) {
             throw new MobileStatePersistenceException("SharedPreferences unavailable");
         }
-        if (!editor.putString(mobileKey(token), encodeMobileState(state)).commit()) {
+        String key = mobileKey(token);
+        String previous = mCommittedMobileStates.containsKey(key)
+                ? mCommittedMobileStates.get(key) : prefs.getString(key, null);
+        String next = encodeMobileState(state);
+        if (!prefs.edit().putString(key, next).commit()) {
+            mCommittedMobileStates.put(key, previous);
+            SharedPreferences.Editor rollback = prefs.edit();
+            if (previous == null) rollback.remove(key);
+            else rollback.putString(key, previous);
+            rollback.commit();
             throw new MobileStatePersistenceException("Failed to persist mobile session");
         }
+        mCommittedMobileStates.put(key, next);
     }
 
     synchronized boolean enqueueMobileFact(String token, String factId, JSONObject event) {
@@ -526,7 +545,8 @@ import java.util.concurrent.Future;
         nextQueue.put(eventCopy);
         final SharedPreferences.Editor editor = editor();
         if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
-        editor.putString(mobileKey(token), encodeMobileState(state));
+        String nextState = encodeMobileState(state);
+        editor.putString(mobileKey(token), nextState);
         editor.putString(KEY_EVENT_QUEUE, nextQueue.toString());
         editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
         if (!editor.commit()) {
@@ -540,6 +560,7 @@ import java.util.concurrent.Future;
             throw new IllegalStateException("Failed to queue mobile fact");
         }
         mEventQueue = nextQueue;
+        mCommittedMobileStates.put(mobileKey(token), nextState);
         return true;
     }
 
@@ -682,7 +703,10 @@ import java.util.concurrent.Future;
     }
 
     private static JSONObject readJsonObject(SharedPreferences prefs, String key) {
-        final String raw = prefs.getString(key, null);
+        return readJsonObject(prefs.getString(key, null), key);
+    }
+
+    private static JSONObject readJsonObject(String raw, String key) {
         if (raw == null) return new JSONObject();
         try {
             return new JSONObject(raw);
