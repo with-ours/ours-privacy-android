@@ -610,9 +610,14 @@ public class OursPrivacyAPI {
     }
 
     synchronized void onForeground() {
+        onForeground(null);
+    }
+
+    synchronized void onForeground(MobileSession.TimePoint point) {
         if (!mInitialized || mPersistence.getOptOut()) return;
         drainMobileFacts();
-        mMobileSession.foreground(mTrackAutomaticEvents);
+        mMobileSession.foreground(mTrackAutomaticEvents,
+                point == null ? mMobileSession.captureTimePoint() : point);
         drainMobileFacts();
     }
 

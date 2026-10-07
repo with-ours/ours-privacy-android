@@ -178,9 +178,13 @@ final class MobileSession {
     }
 
     synchronized List<MobileFact> foreground(boolean automatic) {
+        return foreground(automatic, captureTimePoint());
+    }
+
+    synchronized List<MobileFact> foreground(boolean automatic, TimePoint point) {
         if (disabled || foreground) return Collections.emptyList();
-        long nowWall = clock.wallMillis();
-        long nowElapsed = clock.elapsedMillis();
+        long nowWall = point.wallMillis;
+        long nowElapsed = point.elapsedMillis;
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         List<MobileFact> facts = new ArrayList<>();
         reconcileClock(state, nowWall, nowElapsed, facts, false);

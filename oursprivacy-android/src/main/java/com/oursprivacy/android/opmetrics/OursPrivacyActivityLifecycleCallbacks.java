@@ -20,9 +20,12 @@ import java.lang.ref.WeakReference;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Runnable check;
     private Runnable checkpoint;
+    private Runnable foregroundRetry;
     private long nextCheckpointElapsed = -1;
     private long checkpointRetryDelayMs = CHECK_DELAY;
+    private long foregroundRetryDelayMs = CHECK_DELAY;
     private MobileSession.TimePoint pauseTimePoint;
+    private MobileSession.TimePoint resumeTimePoint;
     private JSONObject pendingLegacySessionProperties;
     private boolean backgroundPending;
     private boolean mIsForeground = false;
@@ -47,6 +50,8 @@ import java.lang.ref.WeakReference;
 
     @Override
     public void onActivityPaused(final Activity activity) {
+        cancelForegroundRetry();
+        resumeTimePoint = null;
         if (!mPaused && mIsForeground && !backgroundPending) {
             pauseTimePoint = mMpInstance.captureMobilePausePoint();
         }
@@ -92,22 +97,31 @@ import java.lang.ref.WeakReference;
     @Override
     public void onActivityResumed(Activity activity) {
         mCurrentActivity = new WeakReference<>(activity);
-
+        if (mPaused) resumeTimePoint = mMpInstance.captureMobileTimePoint();
         mPaused = false;
-        if (backgroundPending && !collectBackground()) return;
-        mMpInstance.onActivityResume();
-        boolean wasBackground = !mIsForeground;
-
         if (check != null) {
             mHandler.removeCallbacks(check);
         }
+        collectResumedForeground();
+    }
 
-        if (wasBackground) {
+    private void collectResumedForeground() {
+        if (mPaused || mMpInstance.hasOptedOutTracking()) return;
+        if (backgroundPending && !collectBackground()) {
+            scheduleForegroundRetry();
+            return;
+        }
+        mMpInstance.onActivityResume();
+        if (!mIsForeground) {
+            if (resumeTimePoint == null) {
+                resumeTimePoint = mMpInstance.captureMobileTimePoint();
+            }
             try {
-                mMpInstance.onForeground();
+                mMpInstance.onForeground(resumeTimePoint);
             } catch (PersistentIdentity.MobileStatePersistenceException e) {
                 OPLog.w("OursPrivacyActivityLifecycleCallbacks",
                         "Unable to record foreground; will retry", e);
+                scheduleForegroundRetry();
                 return;
             }
             mIsForeground = true;
@@ -115,7 +129,25 @@ import java.lang.ref.WeakReference;
             checkpointRetryDelayMs = CHECK_DELAY;
             nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
         }
+        cancelForegroundRetry();
+        resumeTimePoint = null;
         scheduleCheckpoint();
+    }
+
+    private void scheduleForegroundRetry() {
+        if (foregroundRetry != null) mHandler.removeCallbacks(foregroundRetry);
+        foregroundRetry = () -> {
+            foregroundRetry = null;
+            collectResumedForeground();
+        };
+        mHandler.postDelayed(foregroundRetry, foregroundRetryDelayMs);
+        foregroundRetryDelayMs = Math.min(30_000, foregroundRetryDelayMs * 2);
+    }
+
+    private void cancelForegroundRetry() {
+        if (foregroundRetry != null) mHandler.removeCallbacks(foregroundRetry);
+        foregroundRetry = null;
+        foregroundRetryDelayMs = CHECK_DELAY;
     }
 
     private boolean collectBackground() {
@@ -172,18 +204,22 @@ import java.lang.ref.WeakReference;
     }
 
     void onTrackingDisabled() {
+        cancelForegroundRetry();
         if (check != null) mHandler.removeCallbacks(check);
         if (checkpoint != null) mHandler.removeCallbacks(checkpoint);
         mIsForeground = false;
         backgroundPending = false;
         pauseTimePoint = null;
         pendingLegacySessionProperties = null;
+        resumeTimePoint = null;
         nextCheckpointElapsed = -1;
         checkpointRetryDelayMs = CHECK_DELAY;
     }
 
     void onTrackingEnabled() {
         if (mPaused) return;
+        cancelForegroundRetry();
+        resumeTimePoint = null;
         mMpInstance.onForeground();
         mIsForeground = true;
         sStartSessionTime = (double) System.currentTimeMillis();
