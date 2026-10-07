@@ -1,6 +1,5 @@
 package com.oursprivacy.android.opmetrics;
 
-import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.lang.ref.WeakReference;
@@ -35,20 +34,21 @@ public final class ExceptionHandler implements Thread.UncaughtExceptionHandler {
 
     @Override
     public void uncaughtException(final Thread t, final Throwable e) {
-        final OursPrivacyAPI instance = mInstanceRef == null ? null : mInstanceRef.get();
-        if (instance != null && instance.getTrackAutomaticCrashes()
-                && !instance.hasOptedOutTracking()) {
-            try {
+        try {
+            final OursPrivacyAPI instance = mInstanceRef == null ? null : mInstanceRef.get();
+            if (instance != null && instance.getTrackAutomaticCrashes()
+                    && !instance.hasOptedOutTracking()) {
                 final JSONObject props = new JSONObject();
                 props.put(AutomaticEvents.APP_CRASHED_REASON, e.toString());
                 instance.track(AutomaticEvents.APP_CRASHED, props);
-            } catch (JSONException ignored) {}
-        }
-
-        if (mDefaultHandler != null) {
-            mDefaultHandler.uncaughtException(t, e);
-        } else {
-            killProcessAndExit();
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (mDefaultHandler != null) {
+                mDefaultHandler.uncaughtException(t, e);
+            } else {
+                killProcessAndExit();
+            }
         }
     }
 

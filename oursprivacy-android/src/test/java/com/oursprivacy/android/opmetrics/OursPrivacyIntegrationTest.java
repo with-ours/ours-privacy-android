@@ -899,6 +899,33 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void failedOptedInCrashTrackStillDelegatesOriginalThrowableOnce() throws Exception {
+        AtomicReference<Throwable> forwarded = new AtomicReference<>();
+        AtomicReference<Thread> forwardedThread = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+            forwardedThread.set(thread);
+            forwarded.set(error);
+            calls.incrementAndGet();
+        });
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        OursPrivacyAPI op = newApi(new FakeClock(),
+                preferencesWithMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticCrashes(true).build());
+
+        failMobileCommit.set(true);
+        IllegalStateException crash = new IllegalStateException("original host failure");
+        Thread thread = Thread.currentThread();
+        Thread.getDefaultUncaughtExceptionHandler().uncaughtException(thread, crash);
+
+        assertEquals(1, calls.get());
+        assertSame(thread, forwardedThread.get());
+        assertSame(crash, forwarded.get());
+        assertEquals(0, queuedEventCount(AutomaticEvents.APP_CRASHED));
+    }
+
+    @Test
     public void optingOutStopsAnOptedInCrashHandlerFromEmitting() throws Exception {
         AtomicReference<Throwable> forwarded = new AtomicReference<>();
         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> forwarded.set(error));
@@ -1694,6 +1721,7 @@ public class OursPrivacyIntegrationTest {
         failMobileCommit.set(false);
         clock.advance(500);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500));
+        op.flush();
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         JSONArray recoveredData = allCapturedData();
         assertTrue(callbacks.isInForeground());
@@ -1716,6 +1744,202 @@ public class OursPrivacyIntegrationTest {
         assertEquals(2, count(data, "$mobile_session_engagement"));
         assertEquals(10_500, nth(data, "$mobile_session_engagement", 1)
                 .getJSONObject("eventProperties").getLong("engagement_duration_ms"));
+    }
+
+    @Test
+    public void visitorChangeSettlesExpiredBackgroundBeforeRotatingResumedSession()
+            throws Exception {
+        PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
+                .getInternalMutablePackageInfo(mContext.getPackageName());
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putInt(
+                "com.oursprivacy.android.Config.MinimumSessionDuration", 0);
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        String originalVisitor = op.getVisitorId();
+        callbacks.onActivityResumed(null);
+        String oldSid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(1_200);
+        long pausedAt = clock.wall;
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        long resumedAt = clock.wall;
+        callbacks.onActivityResumed(null);
+        assertEquals(1, queuedEventCount("$mobile_app_open"));
+
+        failMobileCommit.set(false);
+        op.setVisitorId("new-visitor");
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(2, count(queue, "$mobile_app_open"));
+        assertEquals(3, count(queue, "$mobile_session_start"));
+        assertEquals(2, count(queue, "$mobile_session_end"));
+        assertEquals(1, count(queue, AutomaticEvents.SESSION));
+        assertEquals(originalVisitor, find(queue, AutomaticEvents.SESSION)
+                .getString("visitor_id"));
+        assertEquals(oldSid, find(queue, AutomaticEvents.SESSION)
+                .getJSONObject("defaultProperties").getString("sid"));
+        JSONObject priorEngagement = find(queue, "$mobile_session_engagement");
+        assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals(MobileSession.utc(pausedAt), priorEngagement
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+        JSONObject resumedOpen = nth(queue, "$mobile_app_open", 1);
+        assertEquals(originalVisitor, resumedOpen.getString("visitor_id"));
+        assertEquals(MobileSession.utc(resumedAt), resumedOpen
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+        assertEquals("new-visitor", nth(queue, "$mobile_session_start", 2)
+                .getString("visitor_id"));
+        assertTrue(eventNames(queue).indexOf(AutomaticEvents.SESSION)
+                < eventNames(queue).lastIndexOf("$mobile_app_open"));
+    }
+
+    @Test
+    public void resetSettlesExpiredBackgroundBeforeDiscardingOldVisitor()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        String originalVisitor = op.getVisitorId();
+        callbacks.onActivityResumed(null);
+        clock.advance(1_200);
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        callbacks.onActivityResumed(null);
+
+        failMobileCommit.set(false);
+        op.reset();
+        String resetSid = mobileState().getString("sid");
+        assertNotEquals(originalVisitor, op.getVisitorId());
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        op.track("after_reset");
+
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(1, count(queue, "$mobile_session_start"));
+        assertEquals(0, count(queue, "$mobile_app_open"));
+        assertEquals(1, count(queue, "after_reset"));
+        assertEquals(resetSid, find(queue, "after_reset")
+                .getJSONObject("defaultProperties").getString("sid"));
+        assertEquals(op.getVisitorId(), find(queue, "after_reset").getString("visitor_id"));
+    }
+
+    @Test
+    public void deepLinkStitchSettlesOldBackgroundBeforeChangingVisitor()
+            throws Exception {
+        PackageInfo packageInfo = Shadows.shadowOf(mContext.getPackageManager())
+                .getInternalMutablePackageInfo(mContext.getPackageName());
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putInt(
+                "com.oursprivacy.android.Config.MinimumSessionDuration", 0);
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        String originalVisitor = op.getVisitorId();
+        callbacks.onActivityResumed(null);
+        clock.advance(1_200);
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(300);
+        long resumedAt = clock.wall;
+        callbacks.onActivityResumed(null);
+
+        failMobileCommit.set(false);
+        op.trackDeepLink("https://example.test/visit?ours_visitor_id=stitched-visitor"
+                + "&utm_source=campaign");
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(1, count(queue, AutomaticEvents.SESSION));
+        assertEquals(originalVisitor, find(queue, AutomaticEvents.SESSION)
+                .getString("visitor_id"));
+        assertEquals(2, count(queue, "$mobile_app_open"));
+        JSONObject resumedOpen = nth(queue, "$mobile_app_open", 1);
+        assertEquals(originalVisitor, resumedOpen.getString("visitor_id"));
+        assertEquals(MobileSession.utc(resumedAt), resumedOpen
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+        assertFalse(resumedOpen.getJSONObject("defaultProperties").has("utm_source"));
+        JSONObject deepLink = find(queue, "$deep_link_opened");
+        assertEquals("stitched-visitor", deepLink.getString("visitor_id"));
+        assertEquals("campaign", deepLink.getJSONObject("defaultProperties")
+                .getString("utm_source"));
+        assertTrue(eventNames(queue).indexOf(AutomaticEvents.SESSION)
+                < eventNames(queue).lastIndexOf("$mobile_app_open"));
+        assertTrue(eventNames(queue).lastIndexOf("$mobile_app_open")
+                < eventNames(queue).indexOf("$deep_link_opened"));
+    }
+
+    @Test
+    public void failedLifecycleSettlementRejectsIdentityResetAndDeepLinkWithoutMutation()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        String originalVisitor = op.getVisitorId();
+        callbacks.onActivityResumed(null);
+        String originalSid = mobileState().getString("sid");
+        clock.advance(1_200);
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        callbacks.onActivityResumed(null);
+
+        assertThrows(IllegalStateException.class, () -> op.setVisitorId("new-visitor"));
+        assertThrows(IllegalStateException.class, op::reset);
+        assertThrows(IllegalStateException.class, () -> op.trackDeepLink(
+                "https://example.test/visit?ours_visitor_id=stitched-visitor"
+                        + "&utm_source=campaign"));
+        assertEquals(originalVisitor, op.getVisitorId());
+        assertEquals(originalSid, mobileState().getString("sid"));
+        assertEquals(1, queuedEventCount("$mobile_session_start"));
+        assertEquals(1, queuedEventCount("$mobile_app_open"));
+        assertEquals(0, queuedEventCount("$mobile_session_end"));
+        assertEquals(0, queuedEventCount("$deep_link_opened"));
+
+        failMobileCommit.set(false);
+        op.track("after_recovery");
+        assertEquals(2, queuedEventCount("$mobile_session_start"));
+        assertEquals(2, queuedEventCount("$mobile_app_open"));
+        assertEquals(originalVisitor, queuedEvent("after_recovery").getString("visitor_id"));
     }
 
     @Test
@@ -3338,7 +3562,9 @@ public class OursPrivacyIntegrationTest {
         callbacks.onActivityPaused(null);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
                 OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY + 1));
-        assertEquals(1, queuedEventCount(AutomaticEvents.SESSION));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, count(allCapturedData(), AutomaticEvents.SESSION));
     }
 
     @Test

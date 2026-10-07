@@ -321,6 +321,7 @@ public class OursPrivacyAPI {
             OPLog.w(LOGTAG, "setVisitorId called with null/empty id; ignoring");
             return;
         }
+        settleResumedLifecycleForManualCall();
         boolean changed = !visitorId.equals(mPersistence.getVisitorId());
         if (changed && mMobileSession != null) {
             drainMobileFacts();
@@ -515,6 +516,7 @@ public class OursPrivacyAPI {
 
     public synchronized void reset() {
         if (!requireInitialized("reset")) return;
+        settleResumedLifecycleForManualCall();
         // Best-effort flush: pending events get one chance to land before
         // persistence is wiped on the calling thread.
         mMessages.flushNow();
