@@ -105,11 +105,28 @@ import java.lang.ref.WeakReference;
         collectResumedForeground();
     }
 
-    private void collectResumedForeground() {
-        if (mPaused || mMpInstance.hasOptedOutTracking()) return;
+    void settleResumedLifecycleForManualCall() {
+        synchronized (mMpInstance) {
+            if (mPaused || mMpInstance.hasOptedOutTracking()
+                    || (!backgroundPending && mIsForeground)) return;
+            if (!collectResumedForegroundLocked()) {
+                throw new PersistentIdentity.MobileStatePersistenceException(
+                        "Unable to record resumed lifecycle");
+            }
+        }
+    }
+
+    private boolean collectResumedForeground() {
+        synchronized (mMpInstance) {
+            return collectResumedForegroundLocked();
+        }
+    }
+
+    private boolean collectResumedForegroundLocked() {
+        if (mPaused || mMpInstance.hasOptedOutTracking()) return true;
         if (backgroundPending && !collectBackground()) {
             scheduleForegroundRetry();
-            return;
+            return false;
         }
         mMpInstance.onActivityResume();
         if (!mIsForeground) {
@@ -122,7 +139,7 @@ import java.lang.ref.WeakReference;
                 OPLog.w("OursPrivacyActivityLifecycleCallbacks",
                         "Unable to record foreground; will retry", e);
                 scheduleForegroundRetry();
-                return;
+                return false;
             }
             mIsForeground = true;
             sStartSessionTime = (double) System.currentTimeMillis();
@@ -132,6 +149,7 @@ import java.lang.ref.WeakReference;
         cancelForegroundRetry();
         resumeTimePoint = null;
         scheduleCheckpoint();
+        return true;
     }
 
     private void scheduleForegroundRetry() {

@@ -224,6 +224,7 @@ public class OursPrivacyAPI {
     public synchronized void trackScreen(String name) {
         if (!requireInitialized("trackScreen")) return;
         if (mPersistence.getOptOut()) return;
+        settleResumedLifecycleForManualCall();
         mMobileSession.screen(name);
         drainMobileFacts();
     }
@@ -243,6 +244,7 @@ public class OursPrivacyAPI {
         if (!isAutomaticEvent && eventName != null && eventName.startsWith("$mobile_")) return;
 
         try {
+            if (!isAutomaticEvent) settleResumedLifecycleForManualCall();
             drainMobileFacts();
             MobileSession.MobileSnapshot snapshot = mMobileSession.snapshot();
             drainMobileFacts();
@@ -259,6 +261,7 @@ public class OursPrivacyAPI {
         if (!requireInitialized("identify")) return;
         if (mPersistence.getOptOut()) return;
         try {
+            settleResumedLifecycleForManualCall();
             drainMobileFacts();
             MobileSession.MobileSnapshot snapshot = mMobileSession.snapshot();
             drainMobileFacts();
@@ -619,6 +622,12 @@ public class OursPrivacyAPI {
         mMobileSession.foreground(mTrackAutomaticEvents,
                 point == null ? mMobileSession.captureTimePoint() : point);
         drainMobileFacts();
+    }
+
+    private void settleResumedLifecycleForManualCall() {
+        if (mLifecycleCallbacks != null) {
+            mLifecycleCallbacks.settleResumedLifecycleForManualCall();
+        }
     }
 
     // ---------- internals ----------

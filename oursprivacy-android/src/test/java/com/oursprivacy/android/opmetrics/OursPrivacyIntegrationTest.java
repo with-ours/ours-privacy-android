@@ -1719,6 +1719,184 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void manualTrackAfterFailedBackgroundSettlesExpiredResumeBeforeSnapshot()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        callbacks.onActivityResumed(null);
+        String oldSid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(1_200);
+        long pausedAt = clock.wall;
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        long resumedAt = clock.wall;
+        callbacks.onActivityResumed(null);
+        assertEquals(1, queuedEventCount("$mobile_app_open"));
+
+        failMobileCommit.set(false);
+        op.track("appointment_booked");
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        List<String> names = eventNames(queue);
+        assertEquals(1, count(queue, "appointment_booked"));
+        assertEquals(2, count(queue, "$mobile_app_open"));
+        assertEquals(2, count(queue, "$mobile_session_start"));
+        assertTrue(names.lastIndexOf("$mobile_session_start")
+                < names.indexOf("appointment_booked"));
+        String newSid = nth(queue, "$mobile_session_start", 1)
+                .getJSONObject("defaultProperties").getString("sid");
+        assertNotEquals(oldSid, newSid);
+        assertEquals(newSid, find(queue, "appointment_booked")
+                .getJSONObject("defaultProperties").getString("sid"));
+        assertEquals(MobileSession.utc(resumedAt), nth(queue, "$mobile_app_open", 1)
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+        JSONObject priorEngagement = nth(queue, "$mobile_session_engagement", 0);
+        assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals(MobileSession.utc(pausedAt), priorEngagement
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        assertEquals(1, queuedEventCount("appointment_booked"));
+        assertEquals(2, queuedEventCount("$mobile_app_open"));
+    }
+
+    @Test
+    public void screenAfterFailedBackgroundSettlesExpiredResumeBeforeView()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        callbacks.onActivityResumed(null);
+        op.trackScreen("Home");
+        String oldSid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(1_200);
+        long pausedAt = clock.wall;
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        callbacks.onActivityResumed(null);
+
+        failMobileCommit.set(false);
+        op.trackScreen("Schedule");
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        List<String> names = eventNames(queue);
+        assertEquals(2, count(queue, "$mobile_screen_view"));
+        assertEquals(2, count(queue, "$mobile_app_open"));
+        assertEquals(2, count(queue, "$mobile_session_start"));
+        assertTrue(names.lastIndexOf("$mobile_session_start")
+                < names.lastIndexOf("$mobile_screen_view"));
+        String newSid = nth(queue, "$mobile_session_start", 1)
+                .getJSONObject("defaultProperties").getString("sid");
+        assertNotEquals(oldSid, newSid);
+        JSONObject screen = nth(queue, "$mobile_screen_view", 1);
+        assertEquals("Schedule", screen.getJSONObject("eventProperties")
+                .getString("screen_name"));
+        assertEquals(newSid, screen.getJSONObject("defaultProperties").getString("sid"));
+        JSONObject priorEngagement = nth(queue, "$mobile_session_engagement", 0);
+        assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals("Home", priorEngagement.getJSONObject("eventProperties")
+                .getString("screen_name"));
+        assertEquals(MobileSession.utc(pausedAt), priorEngagement
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        assertEquals(2, queuedEventCount("$mobile_screen_view"));
+        assertEquals(2, queuedEventCount("$mobile_app_open"));
+    }
+
+    @Test
+    public void manualCallsFailWhileResumedLifecycleStorageStillFails()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        callbacks.onActivityResumed(null);
+        clock.advance(1_200);
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        callbacks.onActivityResumed(null);
+        assertThrows(IllegalStateException.class, () -> op.track("appointment_booked"));
+        assertThrows(IllegalStateException.class, () -> op.trackScreen("Schedule"));
+        assertEquals(0, queuedEventCount("appointment_booked"));
+        assertEquals(0, queuedEventCount("$mobile_screen_view"));
+        assertEquals(1, queuedEventCount("$mobile_app_open"));
+
+        failMobileCommit.set(false);
+        op.track("appointment_booked");
+        op.trackScreen("Schedule");
+        assertEquals(1, queuedEventCount("appointment_booked"));
+        assertEquals(1, queuedEventCount("$mobile_screen_view"));
+        assertEquals(2, queuedEventCount("$mobile_app_open"));
+    }
+
+    @Test
+    public void identifyAfterFailedBackgroundUsesResumedSession()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean();
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock,
+                preferencesWithAppliedMobileStateCommitFailure(failMobileCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+
+        callbacks.onActivityResumed(null);
+        String oldSid = queuedEvent("$mobile_session_start")
+                .getJSONObject("defaultProperties").getString("sid");
+        clock.advance(1_200);
+        callbacks.onActivityPaused(null);
+        failMobileCommit.set(true);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS + 1_000);
+        callbacks.onActivityResumed(null);
+
+        failMobileCommit.set(false);
+        op.identify(OursPrivacyUserProperties.builder().build());
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(2, count(queue, "$mobile_app_open"));
+        assertEquals(2, count(queue, "$mobile_session_start"));
+        String newSid = nth(queue, "$mobile_session_start", 1)
+                .getJSONObject("defaultProperties").getString("sid");
+        assertNotEquals(oldSid, newSid);
+        assertEquals(newSid, find(queue, "$identify")
+                .getJSONObject("defaultProperties").getString("sid"));
+        assertTrue(eventNames(queue).lastIndexOf("$mobile_session_start")
+                < eventNames(queue).indexOf("$identify"));
+    }
+
+    @Test
     public void pausingBeforeForegroundRetryCancelsStaleOpen() throws Exception {
         AtomicBoolean failMobileCommit = new AtomicBoolean(true);
         FakeClock clock = new FakeClock();
