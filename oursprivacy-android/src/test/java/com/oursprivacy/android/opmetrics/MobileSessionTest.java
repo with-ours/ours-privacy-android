@@ -660,6 +660,29 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void requestedPauseRetainsPrePauseRollbackGuard() throws Exception {
+        MobileSession session = session("1.0", "10");
+        String oldSid = session.foreground(true).get(0).snapshot().sid();
+        clock.advance(20 * 60_000);
+        session.checkpoint();
+        clock.advance(12_000);
+        clock.wall -= 10 * 60_000;
+
+        MobileSession.TimePoint entry = session.captureTimePoint();
+        session.requestPausePoint(entry);
+        clock.advance(1_000);
+        MobileSession.TimePoint pause = session.capturePausePoint(entry);
+        List<MobileSession.MobileFact> facts = session.background(pause);
+
+        assertEquals(List.of("$mobile_session_engagement", "$mobile_session_start"),
+                names(facts));
+        assertEquals(12_000, facts.get(0).eventProperties()
+                .getLong("engagement_duration_ms"));
+        assertEquals(oldSid, facts.get(0).snapshot().sid());
+        assertNotEquals(oldSid, facts.get(1).snapshot().sid());
+    }
+
+    @Test
     public void largeWallRollbackOnIdentityRotationRetainsPriorForegroundEngagement()
             throws Exception {
         MobileSession session = session("1.0", "10");

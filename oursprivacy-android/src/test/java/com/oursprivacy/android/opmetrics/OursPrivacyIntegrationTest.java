@@ -1897,6 +1897,91 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void pauseDuringOffThreadForegroundSettlementKeepsEntryBoundary()
+            throws Exception {
+        AtomicBoolean failMobileCommit = new AtomicBoolean(true);
+        AtomicBoolean holdRecoveredCommit = new AtomicBoolean();
+        CountDownLatch commitEntered = new CountDownLatch(1);
+        CountDownLatch releaseCommit = new CountDownLatch(1);
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferencesWithHeldMobileCommit(
+                failMobileCommit, holdRecoveredCommit, commitEntered, releaseCommit));
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build());
+        op.setFlushOnBackground(false);
+        OursPrivacyActivityLifecycleCallbacks callbacks =
+                ReflectionHelpers.getField(op, "mLifecycleCallbacks");
+        callbacks.onActivityResumed(null);
+        assertEquals(0, queuedEventCount("$mobile_app_open"));
+        clock.advance(1_000);
+        failMobileCommit.set(false);
+        holdRecoveredCommit.set(true);
+
+        AtomicReference<Throwable> manualFailure = new AtomicReference<>();
+        Thread manual = new Thread(() -> {
+            try {
+                op.trackScreen("Schedule");
+            } catch (Throwable error) {
+                manualFailure.set(error);
+            }
+        }, "manual-screen-settlement");
+        manual.start();
+        assertTrue(commitEntered.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+
+        long pausedAt = clock.wall;
+        AtomicReference<Throwable> pauseFailure = new AtomicReference<>();
+        Thread pause = new Thread(() -> {
+            try {
+                callbacks.onActivityPaused(null);
+            } catch (Throwable error) {
+                pauseFailure.set(error);
+            }
+        }, "activity-pause");
+        try {
+            pause.start();
+            long deadline = System.nanoTime()
+                    + TimeUnit.MILLISECONDS.toNanos(IDLE_TIMEOUT_MS);
+            while (pause.isAlive() && pause.getState() != Thread.State.BLOCKED
+                    && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertTrue("pause did not reach its state transition",
+                    !pause.isAlive() || pause.getState() == Thread.State.BLOCKED);
+            clock.advance(1_000);
+        } finally {
+            releaseCommit.countDown();
+            manual.join(IDLE_TIMEOUT_MS);
+            pause.join(IDLE_TIMEOUT_MS);
+        }
+        assertFalse(manual.isAlive());
+        assertFalse(pause.isAlive());
+        assertNull(manualFailure.get());
+        assertNull(pauseFailure.get());
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+
+        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        assertEquals(1, count(queue, "$mobile_first_open"));
+        assertEquals(1, count(queue, "$mobile_app_open"));
+        assertEquals(1, count(queue, "$mobile_session_start"));
+        assertEquals(1, count(queue, "$mobile_screen_view"));
+        assertEquals(1, count(queue, "$mobile_session_engagement"));
+        JSONObject open = find(queue, "$mobile_app_open");
+        JSONObject screen = find(queue, "$mobile_screen_view");
+        JSONObject engagement = find(queue, "$mobile_session_engagement");
+        assertTrue(eventNames(queue).indexOf("$mobile_app_open")
+                < eventNames(queue).indexOf("$mobile_screen_view"));
+        assertEquals(open.getJSONObject("defaultProperties").getString("sid"),
+                screen.getJSONObject("defaultProperties").getString("sid"));
+        assertTrue(open.getJSONObject("defaultProperties")
+                .getString("mobile_occurred_at")
+                .compareTo(MobileSession.utc(pausedAt)) <= 0);
+        assertEquals(1_000, engagement.getJSONObject("eventProperties")
+                .getLong("engagement_duration_ms"));
+        assertEquals(MobileSession.utc(pausedAt), engagement
+                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+    }
+
+    @Test
     public void pausingBeforeForegroundRetryCancelsStaleOpen() throws Exception {
         AtomicBoolean failMobileCommit = new AtomicBoolean(true);
         FakeClock clock = new FakeClock();
@@ -3929,6 +4014,41 @@ public class OursPrivacyIntegrationTest {
                         if ("commit".equals(method.getName()) && mobileEdit.get()) {
                             mobileCommitCalls.incrementAndGet();
                             if (fail.get()) return false;
+                        }
+                        return result == delegate ? proxy : result;
+                    });
+        }).when(wrapped).edit();
+        return wrapped;
+    }
+
+    private SharedPreferences preferencesWithHeldMobileCommit(AtomicBoolean fail,
+            AtomicBoolean hold, CountDownLatch entered, CountDownLatch release) {
+        SharedPreferences wrapped = spy(preferences());
+        doAnswer(invocation -> {
+            SharedPreferences.Editor delegate = preferences().edit();
+            AtomicBoolean mobileEdit = new AtomicBoolean();
+            return Proxy.newProxyInstance(SharedPreferences.Editor.class.getClassLoader(),
+                    new Class<?>[]{SharedPreferences.Editor.class}, (proxy, method, args) -> {
+                        if ("putString".equals(method.getName())
+                                && ((String) args[0]).startsWith("mobile_session_")) {
+                            mobileEdit.set(true);
+                        }
+                        if ("commit".equals(method.getName()) && mobileEdit.get()
+                                && hold.compareAndSet(true, false)) {
+                            entered.countDown();
+                            try {
+                                if (!release.await(IDLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                                    throw new AssertionError("mobile commit was not released");
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(e);
+                            }
+                        }
+                        Object result = method.invoke(delegate, args);
+                        if ("commit".equals(method.getName()) && mobileEdit.get()
+                                && fail.get()) {
+                            return false;
                         }
                         return result == delegate ? proxy : result;
                     });

@@ -562,20 +562,25 @@ public class OursPrivacyAPI {
         onBackground(mMobileSession == null ? null : mMobileSession.captureTimePoint(), null);
     }
 
-    synchronized MobileSession.TimePoint captureMobileTimePoint() {
+    MobileSession.TimePoint captureMobileTimePoint() {
         return mMobileSession == null ? null : mMobileSession.captureTimePoint();
+    }
+
+    void requestMobilePausePoint(MobileSession.TimePoint point) {
+        if (mMobileSession != null) mMobileSession.requestPausePoint(point);
     }
 
     synchronized long nextMobileCheckpointElapsed() {
         return mMobileSession.nextCheckpointElapsed();
     }
 
-    synchronized MobileSession.TimePoint captureMobilePausePoint() {
-        return mMobileSession == null ? null : mMobileSession.capturePausePoint();
+    synchronized MobileSession.TimePoint captureMobilePausePoint(
+            MobileSession.TimePoint point) {
+        return mMobileSession == null ? null : mMobileSession.capturePausePoint(point);
     }
 
-    synchronized void onActivityResume() {
-        if (mMobileSession != null) mMobileSession.cancelPendingPause();
+    synchronized void onActivityResume(MobileSession.TimePoint point) {
+        if (mMobileSession != null) mMobileSession.cancelPendingPause(point);
     }
 
     synchronized void onBackground(MobileSession.TimePoint point) {

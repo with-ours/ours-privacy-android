@@ -29,7 +29,7 @@ import java.lang.ref.WeakReference;
     private JSONObject pendingLegacySessionProperties;
     private boolean backgroundPending;
     private boolean mIsForeground = false;
-    private boolean mPaused = true;
+    private volatile boolean mPaused = true;
     private static Double sStartSessionTime;
     public static final int CHECK_DELAY = 500;
 
@@ -50,42 +50,52 @@ import java.lang.ref.WeakReference;
 
     @Override
     public void onActivityPaused(final Activity activity) {
-        cancelForegroundRetry();
-        resumeTimePoint = null;
-        if (!mPaused && mIsForeground && !backgroundPending) {
-            pauseTimePoint = mMpInstance.captureMobilePausePoint();
+        MobileSession.TimePoint entryPoint = null;
+        if (!mPaused) {
+            entryPoint = mMpInstance.captureMobileTimePoint();
+            mMpInstance.requestMobilePausePoint(entryPoint);
+            mPaused = true;
         }
-        mPaused = true;
-
-        if (check != null) {
-            mHandler.removeCallbacks(check);
-        }
-        if (checkpoint != null) {
-            mHandler.removeCallbacks(checkpoint);
-        }
-        mCurrentActivity = null;
-
-        mHandler.postDelayed(check = new Runnable(){
-            @Override
-            public void run() {
-                if (mIsForeground && mPaused) {
-                    JSONObject sessionProperties = null;
-                    try {
-                        double sessionLength = System.currentTimeMillis() - sStartSessionTime;
-                        if (sessionLength >= mConfig.getMinimumSessionDuration() && sessionLength < mConfig.getSessionTimeoutDuration() && mMpInstance.getTrackAutomaticEvents()) {
-                            double elapsedTime = sessionLength / 1000;
-                            double elapsedTimeRounded = Math.round(elapsedTime * 10.0) / 10.0;
-                            sessionProperties = new JSONObject();
-                            sessionProperties.put(AutomaticEvents.SESSION_LENGTH, elapsedTimeRounded);
-                        }
-                    } catch (JSONException e) {
-                        e.printStackTrace();
-                    }
-                    pendingLegacySessionProperties = sessionProperties;
-                    collectBackground();
-                }
+        synchronized (mMpInstance) {
+            cancelForegroundRetry();
+            resumeTimePoint = null;
+            if (entryPoint != null && mIsForeground && !backgroundPending) {
+                pauseTimePoint = mMpInstance.captureMobilePausePoint(entryPoint);
             }
-        }, CHECK_DELAY);
+            mPaused = true;
+
+            if (check != null) {
+                mHandler.removeCallbacks(check);
+            }
+            if (checkpoint != null) {
+                mHandler.removeCallbacks(checkpoint);
+            }
+            mCurrentActivity = null;
+
+            mHandler.postDelayed(check = new Runnable(){
+                @Override
+                public void run() {
+                    synchronized (mMpInstance) {
+                        if (mIsForeground && mPaused) {
+                            JSONObject sessionProperties = null;
+                            try {
+                                double sessionLength = System.currentTimeMillis() - sStartSessionTime;
+                                if (sessionLength >= mConfig.getMinimumSessionDuration() && sessionLength < mConfig.getSessionTimeoutDuration() && mMpInstance.getTrackAutomaticEvents()) {
+                                    double elapsedTime = sessionLength / 1000;
+                                    double elapsedTimeRounded = Math.round(elapsedTime * 10.0) / 10.0;
+                                    sessionProperties = new JSONObject();
+                                    sessionProperties.put(AutomaticEvents.SESSION_LENGTH, elapsedTimeRounded);
+                                }
+                            } catch (JSONException e) {
+                                e.printStackTrace();
+                            }
+                            pendingLegacySessionProperties = sessionProperties;
+                            collectBackground();
+                        }
+                    }
+                }
+            }, CHECK_DELAY);
+        }
     }
 
     @Override
@@ -96,13 +106,16 @@ import java.lang.ref.WeakReference;
 
     @Override
     public void onActivityResumed(Activity activity) {
-        mCurrentActivity = new WeakReference<>(activity);
-        if (mPaused) resumeTimePoint = mMpInstance.captureMobileTimePoint();
-        mPaused = false;
-        if (check != null) {
-            mHandler.removeCallbacks(check);
+        MobileSession.TimePoint entryPoint = mMpInstance.captureMobileTimePoint();
+        synchronized (mMpInstance) {
+            mCurrentActivity = new WeakReference<>(activity);
+            if (mPaused) resumeTimePoint = entryPoint;
+            mPaused = false;
+            if (check != null) {
+                mHandler.removeCallbacks(check);
+            }
+            collectResumedForegroundLocked();
         }
-        collectResumedForeground();
     }
 
     void settleResumedLifecycleForManualCall() {
@@ -116,23 +129,17 @@ import java.lang.ref.WeakReference;
         }
     }
 
-    private boolean collectResumedForeground() {
-        synchronized (mMpInstance) {
-            return collectResumedForegroundLocked();
-        }
-    }
-
     private boolean collectResumedForegroundLocked() {
         if (mPaused || mMpInstance.hasOptedOutTracking()) return true;
         if (backgroundPending && !collectBackground()) {
             scheduleForegroundRetry();
             return false;
         }
-        mMpInstance.onActivityResume();
+        if (resumeTimePoint == null) {
+            resumeTimePoint = mMpInstance.captureMobileTimePoint();
+        }
+        mMpInstance.onActivityResume(resumeTimePoint);
         if (!mIsForeground) {
-            if (resumeTimePoint == null) {
-                resumeTimePoint = mMpInstance.captureMobileTimePoint();
-            }
             try {
                 mMpInstance.onForeground(resumeTimePoint);
             } catch (PersistentIdentity.MobileStatePersistenceException e) {
@@ -148,15 +155,17 @@ import java.lang.ref.WeakReference;
         }
         cancelForegroundRetry();
         resumeTimePoint = null;
-        scheduleCheckpoint();
+        if (!mPaused) scheduleCheckpoint();
         return true;
     }
 
     private void scheduleForegroundRetry() {
         if (foregroundRetry != null) mHandler.removeCallbacks(foregroundRetry);
         foregroundRetry = () -> {
-            foregroundRetry = null;
-            collectResumedForeground();
+            synchronized (mMpInstance) {
+                foregroundRetry = null;
+                collectResumedForegroundLocked();
+            }
         };
         mHandler.postDelayed(foregroundRetry, foregroundRetryDelayMs);
         foregroundRetryDelayMs = Math.min(30_000, foregroundRetryDelayMs * 2);
@@ -193,20 +202,22 @@ import java.lang.ref.WeakReference;
         checkpoint = new Runnable() {
             @Override
             public void run() {
-                if (!mIsForeground || mPaused) return;
-                try {
-                    mMpInstance.onCheckpoint();
-                    checkpointRetryDelayMs = CHECK_DELAY;
-                    nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                            + MobileSession.ENGAGEMENT_THRESHOLD_MS;
-                } catch (PersistentIdentity.MobileStatePersistenceException e) {
-                    nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                            + checkpointRetryDelayMs;
-                    checkpointRetryDelayMs = Math.min(30_000, checkpointRetryDelayMs * 2);
-                    OPLog.w("OursPrivacyActivityLifecycleCallbacks",
-                            "Unable to record checkpoint; will retry", e);
+                synchronized (mMpInstance) {
+                    if (!mIsForeground || mPaused) return;
+                    try {
+                        mMpInstance.onCheckpoint();
+                        checkpointRetryDelayMs = CHECK_DELAY;
+                        nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                                + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+                    } catch (PersistentIdentity.MobileStatePersistenceException e) {
+                        nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
+                                + checkpointRetryDelayMs;
+                        checkpointRetryDelayMs = Math.min(30_000, checkpointRetryDelayMs * 2);
+                        OPLog.w("OursPrivacyActivityLifecycleCallbacks",
+                                "Unable to record checkpoint; will retry", e);
+                    }
+                    scheduleCheckpoint();
                 }
-                scheduleCheckpoint();
             }
         };
         long remaining = Math.max(0, nextCheckpointElapsed
@@ -218,32 +229,38 @@ import java.lang.ref.WeakReference;
     public void onActivityStopped(Activity activity) { }
 
     protected boolean isInForeground() {
-        return mIsForeground;
+        synchronized (mMpInstance) {
+            return mIsForeground;
+        }
     }
 
     void onTrackingDisabled() {
-        cancelForegroundRetry();
-        if (check != null) mHandler.removeCallbacks(check);
-        if (checkpoint != null) mHandler.removeCallbacks(checkpoint);
-        mIsForeground = false;
-        backgroundPending = false;
-        pauseTimePoint = null;
-        pendingLegacySessionProperties = null;
-        resumeTimePoint = null;
-        nextCheckpointElapsed = -1;
-        checkpointRetryDelayMs = CHECK_DELAY;
+        synchronized (mMpInstance) {
+            cancelForegroundRetry();
+            if (check != null) mHandler.removeCallbacks(check);
+            if (checkpoint != null) mHandler.removeCallbacks(checkpoint);
+            mIsForeground = false;
+            backgroundPending = false;
+            pauseTimePoint = null;
+            pendingLegacySessionProperties = null;
+            resumeTimePoint = null;
+            nextCheckpointElapsed = -1;
+            checkpointRetryDelayMs = CHECK_DELAY;
+        }
     }
 
     void onTrackingEnabled() {
-        if (mPaused) return;
-        cancelForegroundRetry();
-        resumeTimePoint = null;
-        mMpInstance.onForeground();
-        mIsForeground = true;
-        sStartSessionTime = (double) System.currentTimeMillis();
-        checkpointRetryDelayMs = CHECK_DELAY;
-        nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
-        scheduleCheckpoint();
+        synchronized (mMpInstance) {
+            if (mPaused) return;
+            cancelForegroundRetry();
+            resumeTimePoint = null;
+            mMpInstance.onForeground();
+            mIsForeground = true;
+            sStartSessionTime = (double) System.currentTimeMillis();
+            checkpointRetryDelayMs = CHECK_DELAY;
+            nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
+            scheduleCheckpoint();
+        }
     }
 
     private final OursPrivacyAPI mMpInstance;

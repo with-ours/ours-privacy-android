@@ -43,6 +43,16 @@ final class MobileSession {
         }
     }
 
+    private static final class CommittedState {
+        final String sid;
+        final long lastActive;
+
+        CommittedState(String sid, long lastActive) {
+            this.sid = sid;
+            this.lastActive = lastActive;
+        }
+    }
+
     static final class MobileSnapshot {
         private final String sid;
         private final long startedAt;
@@ -155,6 +165,8 @@ final class MobileSession {
     private long activeSinceElapsed;
     private String activeScreen;
     private TimePoint pendingPause;
+    private volatile TimePoint requestedPause;
+    private volatile CommittedState committedState;
     private boolean screenChangedDuringPause;
 
     MobileSession(PersistentIdentity identity, String token, String appVersion, String appBuild) {
@@ -175,6 +187,8 @@ final class MobileSession {
         this.appBuild = optional(appBuild);
         this.clock = clock;
         this.disabled = identity.getOptOut();
+        PersistentIdentity.MobileState state = identity.getMobileState(token);
+        committedState = new CommittedState(state.sid, state.lastActive);
     }
 
     synchronized List<MobileFact> foreground(boolean automatic) {
@@ -229,8 +243,14 @@ final class MobileSession {
         return immutable(facts);
     }
 
-    synchronized TimePoint captureTimePoint() {
+    TimePoint captureTimePoint() {
         return new TimePoint(clock.wallMillis(), clock.elapsedMillis());
+    }
+
+    void requestPausePoint(TimePoint point) {
+        CommittedState committed = committedState;
+        requestedPause = new TimePoint(point.wallMillis, point.elapsedMillis,
+                committed.sid, committed.lastActive);
     }
 
     synchronized long nextCheckpointElapsed() {
@@ -245,18 +265,39 @@ final class MobileSession {
     }
 
     synchronized TimePoint capturePausePoint() {
-        long nowWall = clock.wallMillis();
-        long nowElapsed = clock.elapsedMillis();
+        return capturePausePoint(captureTimePoint());
+    }
+
+    synchronized TimePoint capturePausePoint(TimePoint point) {
         PersistentIdentity.MobileState state = identity.getMobileState(token);
-        pendingPause = new TimePoint(nowWall, nowElapsed, state.sid, state.lastActive);
+        TimePoint requested = requestedPause;
+        long lastActive = state.lastActive;
+        if (requested != null && requested.elapsedMillis == point.elapsedMillis) {
+            lastActive = equal(requested.sid, state.sid) ? requested.lastActive
+                    : Math.min(lastActive, point.wallMillis);
+        }
+        pendingPause = new TimePoint(point.wallMillis, point.elapsedMillis, state.sid,
+                lastActive);
+        if (requestedPause != null
+                && requestedPause.elapsedMillis <= point.elapsedMillis) {
+            requestedPause = null;
+        }
         return pendingPause;
     }
 
     synchronized void cancelPendingPause() {
+        cancelPendingPause(captureTimePoint());
+    }
+
+    synchronized void cancelPendingPause(TimePoint resumedAt) {
         if (foreground && screenChangedDuringPause) {
             activeSinceElapsed = Math.max(activeSinceElapsed, clock.elapsedMillis());
         }
         pendingPause = null;
+        if (requestedPause != null
+                && requestedPause.elapsedMillis <= resumedAt.elapsedMillis) {
+            requestedPause = null;
+        }
         screenChangedDuringPause = false;
     }
 
@@ -295,6 +336,10 @@ final class MobileSession {
         foreground = false;
         activeScreen = null;
         pendingPause = null;
+        if (requestedPause != null
+                && requestedPause.elapsedMillis <= point.elapsedMillis) {
+            requestedPause = null;
+        }
         screenChangedDuringPause = false;
         return immutable(facts);
     }
@@ -350,7 +395,7 @@ final class MobileSession {
         if (foreground) accrue(state, nowElapsed);
         emitEngagement(state, nowWall, facts);
         activeScreen = name;
-        if (pendingPause != null) screenChangedDuringPause = true;
+        if (effectivePausePoint() != null) screenChangedDuringPause = true;
         state.lastActive = Math.max(state.lastActive, nowWall);
         JSONObject properties = new JSONObject();
         put(properties, "screen_name", name);
@@ -390,8 +435,9 @@ final class MobileSession {
         if (disabled) return Collections.emptyList();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
         if (state.sid == null) return Collections.emptyList();
-        long nowWall = pendingPause == null ? clock.wallMillis() : pendingPause.wallMillis;
-        long nowElapsed = pendingPause == null ? clock.elapsedMillis() : pendingPause.elapsedMillis;
+        TimePoint pause = effectivePausePoint();
+        long nowWall = pause == null ? clock.wallMillis() : pause.wallMillis;
+        long nowElapsed = pause == null ? clock.elapsedMillis() : pause.elapsedMillis;
         if (clockInvalid(state, nowWall)) {
             List<MobileFact> facts = new ArrayList<>();
             if (foreground) accrue(state, nowElapsed);
@@ -436,6 +482,8 @@ final class MobileSession {
         foreground = false;
         activeScreen = null;
         pendingPause = null;
+        requestedPause = null;
+        committedState = new CommittedState(null, 0);
         screenChangedDuringPause = false;
         if (!identity.getOptOut()) identity.saveMobileState(token, state);
     }
@@ -491,8 +539,9 @@ final class MobileSession {
     }
 
     private void accrue(PersistentIdentity.MobileState state, long nowElapsed) {
-        long endElapsed = pendingPause == null ? nowElapsed
-                : Math.min(nowElapsed, pendingPause.elapsedMillis);
+        TimePoint pause = effectivePausePoint();
+        long endElapsed = pause == null ? nowElapsed
+                : Math.min(nowElapsed, pause.elapsedMillis);
         long duration = Math.max(0, endElapsed - activeSinceElapsed);
         state.accumulatedMs += duration;
         state.pendingMs += duration;
@@ -506,8 +555,9 @@ final class MobileSession {
             JSONObject properties = new JSONObject();
             put(properties, "engagement_duration_ms", state.pendingMs);
             if (activeScreen != null) put(properties, "screen_name", activeScreen);
+            TimePoint pause = effectivePausePoint();
             facts.add(fact("$mobile_session_engagement", state,
-                    pendingPause == null ? nowWall : pendingPause.wallMillis, properties));
+                    pause == null ? nowWall : pause.wallMillis, properties));
         }
         state.pendingMs = 0;
     }
@@ -521,6 +571,7 @@ final class MobileSession {
     private void persistFacts(PersistentIdentity.MobileState state, List<MobileFact> facts) {
         for (MobileFact fact : facts) state.pendingFacts.put(fact.toJson());
         identity.saveMobileState(token, state);
+        committedState = new CommittedState(state.sid, state.lastActive);
     }
 
     private static boolean hasPending(PersistentIdentity.MobileState state, String name) {
@@ -532,11 +583,21 @@ final class MobileSession {
     }
 
     private MobileSnapshot snapshot(PersistentIdentity.MobileState state, long nowWall) {
-        long lastActive = pendingPause == null ? state.lastActive
-                : Math.min(state.lastActive, pendingPause.wallMillis);
+        TimePoint pause = effectivePausePoint();
+        long lastActive = pause == null ? state.lastActive
+                : Math.min(state.lastActive, pause.wallMillis);
         return new MobileSnapshot(state.sid, state.startedAt,
                 Math.max(Math.max(state.startedAt, lastActive), nowWall),
                 appVersion, appBuild);
+    }
+
+    private TimePoint effectivePausePoint() {
+        TimePoint requested = requestedPause;
+        if (pendingPause == null) return requested;
+        if (requested == null || pendingPause.elapsedMillis <= requested.elapsedMillis) {
+            return pendingPause;
+        }
+        return requested;
     }
 
     private static void startNew(PersistentIdentity.MobileState state, long nowWall) {
