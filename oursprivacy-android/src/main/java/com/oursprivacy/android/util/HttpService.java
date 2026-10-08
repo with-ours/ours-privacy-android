@@ -13,13 +13,16 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.SocketTimeoutException;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.GZIPOutputStream;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -121,9 +124,9 @@ public final class HttpService implements RemoteService {
         // Workaround for a known HttpURLConnection bug where stale connections cause spurious EOFExceptions.
         while (retries < 3 && !succeeded) {
             checkNotCancelled(cancellation);
-            InputStream in = null;
             OutputStream out = null;
             HttpURLConnection connection = null;
+            boolean responseReaderOwnsConnection = false;
             try {
                 final URL url = new URL(endpointUrl);
                 connection = (HttpURLConnection) url.openConnection();
@@ -144,7 +147,7 @@ public final class HttpService implements RemoteService {
                 }
 
                 connection.setConnectTimeout(2000);
-                connection.setReadTimeout(1000);
+                connection.setReadTimeout(30000);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -167,22 +170,51 @@ public final class HttpService implements RemoteService {
                 out = null;
                 checkNotCancelled(cancellation);
 
-                if (interactor != null && isProxyRequest(endpointUrl)) {
-                    interactor.onProxyResponse(endpointUrl, connection.getResponseCode());
-                }
-
-                in = connection.getInputStream();
-                response = slurp(in, cancellation);
+                // The request body is complete before the reader owns the connection; cancellation must not wait for disconnect().
+                cancellation.setOnCancel(null);
                 checkNotCancelled(cancellation);
-                in.close();
-                in = null;
+                final HttpURLConnection responseConnection = connection;
+                final AtomicReference<Integer> proxyResponseCode = new AtomicReference<>();
+                FutureTask<byte[]> reader = new FutureTask<>(() -> {
+                    try {
+                        if (interactor != null && isProxyRequest(endpointUrl)) {
+                            proxyResponseCode.set(responseConnection.getResponseCode());
+                        }
+                        try (InputStream in = responseConnection.getInputStream()) {
+                            return slurp(in);
+                        }
+                    } catch (IOException e) {
+                        if (!cancellation.isCancelled()
+                                && responseConnection.getResponseCode() >= MIN_UNAVAILABLE_HTTP_RESPONSE_CODE
+                                && responseConnection.getResponseCode() <= MAX_UNAVAILABLE_HTTP_RESPONSE_CODE) {
+                            throw new ServiceUnavailableException("Service Unavailable",
+                                    responseConnection.getHeaderField("Retry-After"));
+                        }
+                        throw e;
+                    } finally {
+                        responseConnection.disconnect();
+                    }
+                });
+                Thread responseThread = new Thread(reader, "com.oursprivacy.android.HttpResponse");
+                responseThread.setDaemon(true);
+                responseThread.start();
+                responseReaderOwnsConnection = true;
+                try {
+                    response = awaitResponse(reader, cancellation);
+                } finally {
+                    if (interactor != null && !cancellation.isCancelled()) {
+                        Integer code = proxyResponseCode.get();
+                        if (code != null) interactor.onProxyResponse(endpointUrl, code);
+                    }
+                }
+                checkNotCancelled(cancellation);
                 succeeded = true;
             } catch (final EOFException e) {
                 OPLog.d(LOGTAG, "Stale connection; retrying.");
                 retries++;
             } catch (final IOException e) {
                 checkNotCancelled(cancellation);
-                if (connection != null
+                if (!responseReaderOwnsConnection && connection != null
                         && connection.getResponseCode() >= MIN_UNAVAILABLE_HTTP_RESPONSE_CODE
                         && connection.getResponseCode() <= MAX_UNAVAILABLE_HTTP_RESPONSE_CODE) {
                     throw new ServiceUnavailableException("Service Unavailable",
@@ -194,8 +226,7 @@ public final class HttpService implements RemoteService {
                 throw e;
             } finally {
                 if (out != null) try { out.close(); } catch (IOException ignored) {}
-                if (in != null) try { in.close(); } catch (IOException ignored) {}
-                if (connection != null) connection.disconnect();
+                if (connection != null && !responseReaderOwnsConnection) connection.disconnect();
                 cancellation.setOnCancel(null);
             }
         }
@@ -215,25 +246,36 @@ public final class HttpService implements RemoteService {
         return !endpointUrl.toLowerCase().contains(OURSPRIVACY_API.toLowerCase());
     }
 
-    private static byte[] slurp(InputStream in, RequestCancellation cancellation) throws IOException {
-        final ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        final byte[] data = new byte[8192];
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+    private static byte[] awaitResponse(FutureTask<byte[]> reader,
+                                        RequestCancellation cancellation)
+            throws ServiceUnavailableException, IOException {
         while (true) {
             checkNotCancelled(cancellation);
-            final int n;
             try {
-                n = in.read(data, 0, data.length);
-            } catch (SocketTimeoutException e) {
-                checkNotCancelled(cancellation);
-                if (System.nanoTime() >= deadline) throw e;
+                return reader.get(100, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ignored) {
                 continue;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while reading response", e);
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof ServiceUnavailableException) {
+                    throw (ServiceUnavailableException) cause;
+                }
+                if (cause instanceof IOException) throw (IOException) cause;
+                if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+                throw new IOException("Unable to read response", cause);
             }
-            if (n == -1) break;
-            if (n > 0) {
-                buf.write(data, 0, n);
-                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
-            }
+        }
+    }
+
+    private static byte[] slurp(InputStream in) throws IOException {
+        final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        final byte[] data = new byte[8192];
+        int n;
+        while ((n = in.read(data, 0, data.length)) != -1) {
+            buf.write(data, 0, n);
         }
         return buf.toByteArray();
     }

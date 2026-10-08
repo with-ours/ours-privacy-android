@@ -1,6 +1,7 @@
 package com.oursprivacy.android.util;
 
 import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -11,13 +12,60 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Collections;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class HttpServiceTest {
+    @Test
+    public void responseHeadersCanArriveAfterOneSecond() throws Exception {
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+        try (ServerSocket listener = new ServerSocket(0)) {
+            Future<?> server = threads.submit(() -> {
+                try (Socket socket = listener.accept()) {
+                    BufferedReader input = new BufferedReader(
+                            new InputStreamReader(socket.getInputStream()));
+                    String line;
+                    while ((line = input.readLine()) != null && !line.isEmpty()) {}
+                    Thread.sleep(2_000);
+                    socket.getOutputStream().write(
+                            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".getBytes(StandardCharsets.UTF_8));
+                    socket.getOutputStream().flush();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            AtomicReference<Thread> requestThread = new AtomicReference<>();
+            AtomicInteger callbackCode = new AtomicInteger();
+            ProxyServerInteractor proxy = new ProxyServerInteractor() {
+                @Override public Map<String, String> getProxyRequestHeaders() {
+                    return Collections.emptyMap();
+                }
+                @Override public void onProxyResponse(String path, int code) {
+                    assertEquals(requestThread.get(), Thread.currentThread());
+                    callbackCode.set(code);
+                }
+            };
+            Future<byte[]> request = threads.submit(() -> {
+                requestThread.set(Thread.currentThread());
+                return new HttpService().performRequest(
+                        "http://127.0.0.1:" + listener.getLocalPort() + "/ingest",
+                        proxy, null, "{}", null, new RemoteService.RequestCancellation());
+            });
+            assertArrayEquals("ok".getBytes(StandardCharsets.UTF_8), request.get(5, TimeUnit.SECONDS));
+            assertEquals(200, callbackCode.get());
+            server.get(5, TimeUnit.SECONDS);
+        } finally {
+            threads.shutdownNow();
+        }
+    }
+
     @Test
     public void responseBodyCanPauseLongerThanCancellationPoll() throws Exception {
         ExecutorService threads = Executors.newFixedThreadPool(2);
@@ -49,7 +97,7 @@ public class HttpServiceTest {
     }
 
     @Test
-    public void cancellationClosesAnActiveResponseWithoutWaitingForReadTimeout() throws Exception {
+    public void cancellationReturnsWithoutWaitingForActiveResponse() throws Exception {
         CountDownLatch requestReceived = new CountDownLatch(1);
         CountDownLatch releaseServer = new CountDownLatch(1);
         ExecutorService threads = Executors.newFixedThreadPool(2);
