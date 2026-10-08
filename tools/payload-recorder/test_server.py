@@ -19,7 +19,10 @@ class RecorderStatusTest(unittest.TestCase):
                 base = f"http://127.0.0.1:{server.server_port}"
                 envelope = {
                     "token": "e2e-token",
-                    "data": [{"event": "demo_event"}],
+                    "data": [
+                        {"event": "demo_event", "visitor_id": "device-visitor"},
+                        {"event": "second_event", "visitor_id": "device-visitor"},
+                    ],
                 }
                 request = Request(
                     base + "/ingest",
@@ -28,10 +31,16 @@ class RecorderStatusTest(unittest.TestCase):
                 )
                 with urlopen(request) as response:
                     self.assertEqual(response.status, 200)
+                    self.assertEqual(json.load(response), {
+                        "success": True,
+                        "visitor_id": "device-visitor",
+                        "accepted": 2,
+                        "rejected": [],
+                    })
                 with urlopen(base + "/events") as response:
                     self.assertEqual(
                         json.load(response),
-                        {"events": ["demo_event"]},
+                        {"events": ["demo_event", "second_event"]},
                     )
             finally:
                 server.shutdown()

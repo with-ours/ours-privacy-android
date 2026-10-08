@@ -1,6 +1,8 @@
 package com.oursprivacy.android.opmetrics;
 
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.os.Build;
 import android.util.DisplayMetrics;
@@ -10,8 +12,8 @@ import org.json.JSONObject;
 
 /**
  * Collects the device / OS / screen fields that go into every event's
- * {@code defaultProperties}. Static — captured once per process from
- * the application context.
+ * {@code defaultProperties}. Device fields are cached per process; package
+ * metadata is read for each SDK instance so an updated app is observed.
  */
 final class OPDefaultProperties {
 
@@ -19,7 +21,7 @@ final class OPDefaultProperties {
     private static final Object sLock = new Object();
 
     /**
-     * Returns a shallow copy of the cached defaults. Callers may freely overlay
+     * Returns a shallow copy of the defaults. Callers may freely overlay
      * caller-supplied default-event-property bags + attribution bags without
      * mutating the cache.
      */
@@ -28,7 +30,25 @@ final class OPDefaultProperties {
             if (sCached == null) {
                 sCached = build(context.getApplicationContext());
             }
-            return copy(sCached);
+            JSONObject defaults = copy(sCached);
+            addAppProperties(defaults, context.getApplicationContext());
+            return defaults;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void addAppProperties(JSONObject defaults, Context appContext) {
+        if (appContext == null) return;
+        try {
+            PackageInfo info = appContext.getPackageManager()
+                    .getPackageInfo(appContext.getPackageName(), 0);
+            if (info.versionName != null && !info.versionName.isEmpty()) {
+                defaults.put("app_version", info.versionName);
+            }
+            long build = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? info.getLongVersionCode() : info.versionCode;
+            defaults.put("app_build", Long.toString(build));
+        } catch (PackageManager.NameNotFoundException | JSONException ignored) {
         }
     }
 
@@ -41,7 +61,6 @@ final class OPDefaultProperties {
             out.put("os_name", "Android");
             out.put("os_version", Build.VERSION.RELEASE == null ? "" : Build.VERSION.RELEASE);
             out.put("version", OPConfig.VERSION);
-
             final DisplayMetrics dm = appContext == null
                     ? Resources.getSystem().getDisplayMetrics()
                     : appContext.getResources().getDisplayMetrics();

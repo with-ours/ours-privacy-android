@@ -23,35 +23,45 @@ final class Track {
         final JSONObject defaultUserConsentProperties;
         final JSONObject attributionDefaultProperties;
         final JSONObject baseDefaultProperties;
+        final MobileSession.MobileSnapshot mobileSnapshot;
 
         Context(String visitorId,
                 JSONObject defaultEventProperties,
                 JSONObject defaultUserCustomProperties,
                 JSONObject defaultUserConsentProperties,
                 JSONObject attributionDefaultProperties,
-                JSONObject baseDefaultProperties) {
+                JSONObject baseDefaultProperties,
+                MobileSession.MobileSnapshot mobileSnapshot) {
             this.visitorId = visitorId;
             this.defaultEventProperties = defaultEventProperties != null ? defaultEventProperties : new JSONObject();
             this.defaultUserCustomProperties = defaultUserCustomProperties != null ? defaultUserCustomProperties : new JSONObject();
             this.defaultUserConsentProperties = defaultUserConsentProperties != null ? defaultUserConsentProperties : new JSONObject();
             this.attributionDefaultProperties = attributionDefaultProperties != null ? attributionDefaultProperties : new JSONObject();
             this.baseDefaultProperties = baseDefaultProperties != null ? baseDefaultProperties : new JSONObject();
+            this.mobileSnapshot = mobileSnapshot;
         }
     }
 
     /**
      * Builds the inner data[] element for a {@code track()} call.
      *
-     * {@code eventProperties} is {@code {...defaultEventProperties, ...callerEventProperties}}
-     * (per-call wins). {@code userProperties} runs through {@link #mergeUserProperties} —
-     * default custom/consent bags merge with per-call, with the empty-consent omission rule.
-     * {@code defaultProperties} is the OS/device snapshot overlaid with the attribution bag.
+     * Manual tracks merge caller defaults and attribution. Fixed-ID mobile facts
+     * use only captured event properties and SDK defaults.
      */
     static JSONObject composeTrackEvent(String eventName,
                                         JSONObject eventProperties,
                                         JSONObject userProperties,
                                         Context ctx) throws JSONException {
-        final JSONObject mergedEvent = mergeOnto(new JSONObject(), ctx.defaultEventProperties);
+        return composeTrackEvent(eventName, eventProperties, userProperties, ctx, null);
+    }
+
+    static JSONObject composeTrackEvent(String eventName,
+                                        JSONObject eventProperties,
+                                        JSONObject userProperties,
+                                        Context ctx,
+                                        String fixedDistinctId) throws JSONException {
+        final JSONObject mergedEvent = new JSONObject();
+        if (fixedDistinctId == null) mergeOnto(mergedEvent, ctx.defaultEventProperties);
         if (eventProperties != null) {
             mergeOnto(mergedEvent, eventProperties);
         }
@@ -59,20 +69,28 @@ final class Track {
         // $distinct_id override lets callers pin a per-event distinct_id (replay stitching).
         final String distinctId;
         final Object override = mergedEvent.opt("$distinct_id");
-        if (override instanceof String && !((String) override).isEmpty()) {
+        if (fixedDistinctId != null) {
+            distinctId = fixedDistinctId;
+            mergedEvent.remove("$distinct_id");
+        } else if (override instanceof String && !((String) override).isEmpty()) {
             distinctId = (String) override;
             mergedEvent.remove("$distinct_id");
         } else {
             distinctId = UUID.randomUUID().toString();
         }
 
-        final JSONObject mergedUser = mergeUserProperties(
-                userProperties,
-                ctx.defaultUserCustomProperties,
-                ctx.defaultUserConsentProperties);
+        final JSONObject mergedUser = fixedDistinctId == null
+                ? mergeUserProperties(userProperties, ctx.defaultUserCustomProperties,
+                        ctx.defaultUserConsentProperties)
+                : null;
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
-        mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (fixedDistinctId == null) mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (ctx.mobileSnapshot != null) {
+            defaults.remove("app_version");
+            defaults.remove("app_build");
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", eventName == null ? "op_event" : eventName);
@@ -97,6 +115,11 @@ final class Track {
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
         mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (ctx.mobileSnapshot != null) {
+            defaults.remove("app_version");
+            defaults.remove("app_build");
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", "$identify");
@@ -129,9 +152,11 @@ final class Track {
         final boolean havePerCall = perCall != null && perCall.length() > 0;
 
         if (!haveDefaultCustom && !haveDefaultConsent) {
-            // Fast path — no store-level defaults. Pass per-call through unchanged.
             if (!havePerCall) return null;
-            return shallowCopy(perCall);
+            final JSONObject copied = shallowCopy(perCall);
+            final JSONObject consent = copied.optJSONObject("consent");
+            if (consent != null && consent.length() == 0) copied.remove("consent");
+            return copied.length() == 0 ? null : copied;
         }
 
         if (!havePerCall && !haveDefaultCustom && !haveDefaultConsent) {

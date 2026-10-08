@@ -18,6 +18,11 @@ import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.GZIPOutputStream;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -95,6 +100,18 @@ public final class HttpService implements RemoteService {
                                  String body,
                                  SSLSocketFactory socketFactory)
             throws ServiceUnavailableException, IOException {
+        return performRequest(endpointUrl, interactor, params, body, socketFactory,
+                new RequestCancellation());
+    }
+
+    @Override
+    public byte[] performRequest(String endpointUrl,
+                                 ProxyServerInteractor interactor,
+                                 Map<String, Object> params,
+                                 String body,
+                                 SSLSocketFactory socketFactory,
+                                 RequestCancellation cancellation)
+            throws ServiceUnavailableException, IOException {
         OPLog.v(LOGTAG, "Attempting request to " + endpointUrl);
         if (body == null) {
             throw new IOException("HttpService.performRequest called with null body");
@@ -106,12 +123,16 @@ public final class HttpService implements RemoteService {
 
         // Workaround for a known HttpURLConnection bug where stale connections cause spurious EOFExceptions.
         while (retries < 3 && !succeeded) {
-            InputStream in = null;
+            checkNotCancelled(cancellation);
             OutputStream out = null;
             HttpURLConnection connection = null;
+            boolean responseReaderOwnsConnection = false;
             try {
                 final URL url = new URL(endpointUrl);
                 connection = (HttpURLConnection) url.openConnection();
+                final HttpURLConnection activeConnection = connection;
+                cancellation.setOnCancel(activeConnection::disconnect);
+                checkNotCancelled(cancellation);
                 if (socketFactory != null && connection instanceof HttpsURLConnection) {
                     ((HttpsURLConnection) connection).setSSLSocketFactory(socketFactory);
                 }
@@ -134,6 +155,7 @@ public final class HttpService implements RemoteService {
 
                 final byte[] payload = body.getBytes(StandardCharsets.UTF_8);
                 out = connection.getOutputStream();
+                checkNotCancelled(cancellation);
                 if (mShouldGzip) {
                     connection.setRequestProperty("Content-Encoding", "gzip");
                     final GZIPOutputStream gz = new GZIPOutputStream(new BufferedOutputStream(out));
@@ -146,42 +168,106 @@ public final class HttpService implements RemoteService {
                 }
                 out.close();
                 out = null;
+                checkNotCancelled(cancellation);
 
-                if (interactor != null && isProxyRequest(endpointUrl)) {
-                    interactor.onProxyResponse(endpointUrl, connection.getResponseCode());
+                // The request body is complete before the reader owns the connection; cancellation must not wait for disconnect().
+                cancellation.setOnCancel(null);
+                checkNotCancelled(cancellation);
+                final HttpURLConnection responseConnection = connection;
+                final AtomicReference<Integer> proxyResponseCode = new AtomicReference<>();
+                FutureTask<byte[]> reader = new FutureTask<>(() -> {
+                    try {
+                        if (interactor != null && isProxyRequest(endpointUrl)) {
+                            proxyResponseCode.set(responseConnection.getResponseCode());
+                        }
+                        try (InputStream in = responseConnection.getInputStream()) {
+                            return slurp(in);
+                        }
+                    } catch (IOException e) {
+                        if (!cancellation.isCancelled()
+                                && responseConnection.getResponseCode() >= MIN_UNAVAILABLE_HTTP_RESPONSE_CODE
+                                && responseConnection.getResponseCode() <= MAX_UNAVAILABLE_HTTP_RESPONSE_CODE) {
+                            throw new ServiceUnavailableException("Service Unavailable",
+                                    responseConnection.getHeaderField("Retry-After"));
+                        }
+                        throw e;
+                    } finally {
+                        responseConnection.disconnect();
+                    }
+                });
+                Thread responseThread = new Thread(reader, "com.oursprivacy.android.HttpResponse");
+                responseThread.setDaemon(true);
+                responseThread.start();
+                responseReaderOwnsConnection = true;
+                try {
+                    response = awaitResponse(reader, cancellation);
+                } finally {
+                    if (interactor != null && !cancellation.isCancelled()) {
+                        Integer code = proxyResponseCode.get();
+                        if (code != null) interactor.onProxyResponse(endpointUrl, code);
+                    }
                 }
-
-                in = connection.getInputStream();
-                response = slurp(in);
-                in.close();
-                in = null;
+                checkNotCancelled(cancellation);
                 succeeded = true;
             } catch (final EOFException e) {
                 OPLog.d(LOGTAG, "Stale connection; retrying.");
                 retries++;
             } catch (final IOException e) {
-                if (connection != null
+                checkNotCancelled(cancellation);
+                if (!responseReaderOwnsConnection && connection != null
                         && connection.getResponseCode() >= MIN_UNAVAILABLE_HTTP_RESPONSE_CODE
                         && connection.getResponseCode() <= MAX_UNAVAILABLE_HTTP_RESPONSE_CODE) {
                     throw new ServiceUnavailableException("Service Unavailable",
                             connection.getHeaderField("Retry-After"));
                 }
                 throw e;
+            } catch (final RuntimeException e) {
+                if (cancellation.isCancelled()) throw new IOException("Request cancelled", e);
+                throw e;
             } finally {
                 if (out != null) try { out.close(); } catch (IOException ignored) {}
-                if (in != null) try { in.close(); } catch (IOException ignored) {}
-                if (connection != null) connection.disconnect();
+                if (connection != null && !responseReaderOwnsConnection) connection.disconnect();
+                cancellation.setOnCancel(null);
             }
         }
 
         if (retries >= 3) {
             OPLog.v(LOGTAG, "Could not connect to OursPrivacy service after three retries.");
         }
+        checkNotCancelled(cancellation);
         return response;
+    }
+
+    private static void checkNotCancelled(RequestCancellation cancellation) throws IOException {
+        if (cancellation.isCancelled()) throw new IOException("Request cancelled");
     }
 
     private static boolean isProxyRequest(String endpointUrl) {
         return !endpointUrl.toLowerCase().contains(OURSPRIVACY_API.toLowerCase());
+    }
+
+    private static byte[] awaitResponse(FutureTask<byte[]> reader,
+                                        RequestCancellation cancellation)
+            throws ServiceUnavailableException, IOException {
+        while (true) {
+            checkNotCancelled(cancellation);
+            try {
+                return reader.get(100, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException ignored) {
+                continue;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while reading response", e);
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof ServiceUnavailableException) {
+                    throw (ServiceUnavailableException) cause;
+                }
+                if (cause instanceof IOException) throw (IOException) cause;
+                if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+                throw new IOException("Unable to read response", cause);
+            }
+        }
     }
 
     private static byte[] slurp(InputStream in) throws IOException {
@@ -191,7 +277,6 @@ public final class HttpService implements RemoteService {
         while ((n = in.read(data, 0, data.length)) != -1) {
             buf.write(data, 0, n);
         }
-        buf.flush();
         return buf.toByteArray();
     }
 

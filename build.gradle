@@ -7,6 +7,9 @@ plugins {
 
 allprojects {
     repositories {
+        if (findProperty('useLocalPublished') == 'true') {
+            mavenLocal()
+        }
         google()
         mavenCentral()
     }

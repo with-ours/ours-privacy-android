@@ -11,6 +11,7 @@ import java.util.Map;
 public final class OursPrivacyInitOptions {
 
     private final Boolean trackAutomaticEvents;
+    private final boolean trackAutomaticCrashes;
     private final String serverURL;
     private final String visitorId;
     private final String initialURL;
@@ -18,9 +19,11 @@ public final class OursPrivacyInitOptions {
     private final JSONObject defaultUserCustomProperties;
     private final JSONObject defaultUserConsentProperties;
     private final Boolean optedOutByDefault;
+    private final IngestRejectionListener ingestRejectionListener;
 
     private OursPrivacyInitOptions(Builder b) {
         this.trackAutomaticEvents = b.trackAutomaticEvents;
+        this.trackAutomaticCrashes = b.trackAutomaticCrashes;
         this.serverURL = b.serverURL;
         this.visitorId = b.visitorId;
         this.initialURL = b.initialURL;
@@ -28,6 +31,7 @@ public final class OursPrivacyInitOptions {
         this.defaultUserCustomProperties = b.defaultUserCustomProperties;
         this.defaultUserConsentProperties = b.defaultUserConsentProperties;
         this.optedOutByDefault = b.optedOutByDefault;
+        this.ingestRejectionListener = b.ingestRejectionListener;
     }
 
     public static Builder builder() {
@@ -35,6 +39,7 @@ public final class OursPrivacyInitOptions {
     }
 
     public Boolean getTrackAutomaticEvents() { return trackAutomaticEvents; }
+    public boolean getTrackAutomaticCrashes() { return trackAutomaticCrashes; }
     public String getServerURL() { return serverURL; }
     public String getVisitorId() { return visitorId; }
     public String getInitialURL() { return initialURL; }
@@ -42,9 +47,11 @@ public final class OursPrivacyInitOptions {
     public JSONObject getDefaultUserCustomProperties() { return defaultUserCustomProperties; }
     public JSONObject getDefaultUserConsentProperties() { return defaultUserConsentProperties; }
     public Boolean getOptedOutByDefault() { return optedOutByDefault; }
+    public IngestRejectionListener getIngestRejectionListener() { return ingestRejectionListener; }
 
     public static final class Builder {
         private Boolean trackAutomaticEvents;
+        private boolean trackAutomaticCrashes;
         private String serverURL;
         private String visitorId;
         private String initialURL;
@@ -52,8 +59,10 @@ public final class OursPrivacyInitOptions {
         private JSONObject defaultUserCustomProperties;
         private JSONObject defaultUserConsentProperties;
         private Boolean optedOutByDefault;
+        private IngestRejectionListener ingestRejectionListener;
 
         public Builder trackAutomaticEvents(boolean v) { this.trackAutomaticEvents = v; return this; }
+        public Builder trackAutomaticCrashes(boolean v) { this.trackAutomaticCrashes = v; return this; }
         public Builder serverURL(String v) { this.serverURL = v; return this; }
         public Builder visitorId(String v) { this.visitorId = v; return this; }
         public Builder initialURL(String v) { this.initialURL = v; return this; }
@@ -77,6 +86,10 @@ public final class OursPrivacyInitOptions {
         }
 
         public Builder optedOutByDefault(boolean v) { this.optedOutByDefault = v; return this; }
+        public Builder onIngestRejected(IngestRejectionListener v) {
+            this.ingestRejectionListener = v;
+            return this;
+        }
 
         public OursPrivacyInitOptions build() {
             return new OursPrivacyInitOptions(this);
