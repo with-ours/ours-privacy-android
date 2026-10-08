@@ -3,9 +3,12 @@ package com.oursprivacy.oursprivacydemo
 import android.os.SystemClock
 import androidx.lifecycle.Lifecycle
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -31,11 +34,11 @@ class TrackingFlowTest {
         compose.onNodeWithContentDescription("Back").performClick()
 
         compose.onNodeWithText("Tracking").performClick()
-        for (button in listOf("Stitch visitor link", "Track Schedule", "Book appointment")) {
-            compose.onNodeWithText(button).performClick()
-            compose.onNodeWithText("OK").performClick()
-        }
-        for (button in listOf("Track event", "Identify", "Track + per-call user props", "Deep link")) {
+        for (button in listOf(
+            "Stitch visitor link", "Track Schedule", "Book appointment",
+            "Track event", "Identify", "Track + per-call user props", "Deep link"
+        )) {
+            compose.onNode(hasScrollAction()).performScrollToNode(hasText(button))
             compose.onNodeWithText(button).performClick()
             compose.onNodeWithText("OK").performClick()
         }

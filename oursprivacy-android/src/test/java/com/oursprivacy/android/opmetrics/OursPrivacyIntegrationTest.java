@@ -2361,12 +2361,15 @@ public class OursPrivacyIntegrationTest {
 
         failMobileCommit.set(false);
         clock.advance(500);
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500));
-        JSONObject engagement = queuedEvent("$mobile_session_engagement");
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1_000));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONArray captured = allCapturedData();
+        JSONObject engagement = find(captured, "$mobile_session_engagement");
         assertEquals(10_500, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(10_500, mobileState().getLong("accumulated_ms"));
-        assertEquals(1, queuedEventCount("$mobile_session_engagement"));
+        assertEquals(1, count(captured, "$mobile_session_engagement"));
     }
 
     @Test
@@ -3593,9 +3596,11 @@ public class OursPrivacyIntegrationTest {
 
         clock.wall += 10 * 60_000;
         op.track("retry_trigger");
-        JSONArray queue = new JSONArray(preferences().getString("event_queue", "[]"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
-                "$mobile_session_start", "$opt_in", "retry_trigger"), eventNames(queue));
+                "$mobile_session_start", "$opt_in", "retry_trigger"),
+                eventNames(allCapturedData()));
     }
 
     @Test
