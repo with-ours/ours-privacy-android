@@ -36,6 +36,19 @@ jobs:
       - name: Run unit tests and lint
         run: ./gradlew test lint
 
+      - name: Report failed unit tests
+        if: failure()
+        run: |
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          from xml.etree import ElementTree
+          for path in Path("oursprivacy-android/build/test-results").rglob("TEST-*.xml"):
+              for case in ElementTree.parse(path).iter("testcase"):
+                  for failure in case.findall("failure"):
+                      print(f"{case.get('classname')}.{case.get('name')}: {failure.get('message')}")
+                      print(failure.text or "")
+          PYTEST
+
       - name: Test recorder assertions
         run: python3 -m unittest discover -s tools/payload-recorder -p 'test_*.py'
 
@@ -109,3 +122,16 @@ jobs:
           api-level: 36
           arch: x86_64
           script: tools/run-e2e.sh
+
+      - name: Report failed emulator tests
+        if: failure()
+        run: |
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          from xml.etree import ElementTree
+          for path in Path("oursprivacydemo/build").rglob("TEST-*.xml"):
+              for case in ElementTree.parse(path).iter("testcase"):
+                  for failure in case.findall("failure"):
+                      print(f"{case.get('classname')}.{case.get('name')}: {failure.get('message')}")
+                      print(failure.text or "")
+          PYTEST
