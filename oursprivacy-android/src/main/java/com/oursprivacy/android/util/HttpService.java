@@ -13,11 +13,13 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.SocketTimeoutException;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 
 import javax.net.ssl.HttpsURLConnection;
@@ -142,7 +144,7 @@ public final class HttpService implements RemoteService {
                 }
 
                 connection.setConnectTimeout(2000);
-                connection.setReadTimeout(30000);
+                connection.setReadTimeout(1000);
                 connection.setRequestMethod("POST");
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -170,7 +172,7 @@ public final class HttpService implements RemoteService {
                 }
 
                 in = connection.getInputStream();
-                response = slurp(in);
+                response = slurp(in, cancellation);
                 checkNotCancelled(cancellation);
                 in.close();
                 in = null;
@@ -213,14 +215,26 @@ public final class HttpService implements RemoteService {
         return !endpointUrl.toLowerCase().contains(OURSPRIVACY_API.toLowerCase());
     }
 
-    private static byte[] slurp(InputStream in) throws IOException {
+    private static byte[] slurp(InputStream in, RequestCancellation cancellation) throws IOException {
         final ByteArrayOutputStream buf = new ByteArrayOutputStream();
         final byte[] data = new byte[8192];
-        int n;
-        while ((n = in.read(data, 0, data.length)) != -1) {
-            buf.write(data, 0, n);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        while (true) {
+            checkNotCancelled(cancellation);
+            final int n;
+            try {
+                n = in.read(data, 0, data.length);
+            } catch (SocketTimeoutException e) {
+                checkNotCancelled(cancellation);
+                if (System.nanoTime() >= deadline) throw e;
+                continue;
+            }
+            if (n == -1) break;
+            if (n > 0) {
+                buf.write(data, 0, n);
+                deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+            }
         }
-        buf.flush();
         return buf.toByteArray();
     }
 
