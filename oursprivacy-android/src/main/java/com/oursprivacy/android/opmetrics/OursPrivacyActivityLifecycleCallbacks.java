@@ -207,8 +207,7 @@ import java.lang.ref.WeakReference;
                     try {
                         mMpInstance.onCheckpoint();
                         checkpointRetryDelayMs = CHECK_DELAY;
-                        nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
-                                + MobileSession.ENGAGEMENT_THRESHOLD_MS;
+                        nextCheckpointElapsed = mMpInstance.nextMobileCheckpointElapsed();
                     } catch (PersistentIdentity.MobileStatePersistenceException e) {
                         nextCheckpointElapsed = mMpInstance.captureMobileTimePoint().elapsedMillis
                                 + checkpointRetryDelayMs;

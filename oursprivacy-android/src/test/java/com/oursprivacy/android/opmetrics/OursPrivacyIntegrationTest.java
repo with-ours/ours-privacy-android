@@ -90,6 +90,11 @@ public class OursPrivacyIntegrationTest {
                 .getInternalMutablePackageInfo(mContext.getPackageName());
         packageInfo.versionName = "2.5.1";
         packageInfo.setLongVersionCode(42);
+        if (packageInfo.applicationInfo.metaData == null) {
+            packageInfo.applicationInfo.metaData = new Bundle();
+        }
+        packageInfo.applicationInfo.metaData.putInt(
+                "com.oursprivacy.android.Config.FlushInterval", 60_000);
         // Wipe persisted state so each test starts from a known-clean slate.
         mContext.getSharedPreferences("com.oursprivacy.android.OursPrivacy",
                 android.content.Context.MODE_PRIVATE).edit().clear().commit();
@@ -2861,6 +2866,7 @@ public class OursPrivacyIntegrationTest {
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300));
         op.trackScreen("Schedule");
         callbacks.onActivityResumed(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
         clock.advance(100);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(101));
         op.flush();
@@ -2904,6 +2910,7 @@ public class OursPrivacyIntegrationTest {
 
         failMobileCommit.set(false);
         callbacks.onActivityResumed(null);
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
         clock.advance(100);
         callbacks.onActivityPaused(null);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(
@@ -2912,11 +2919,16 @@ public class OursPrivacyIntegrationTest {
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         JSONArray data = allCapturedData();
         assertEquals(1, count(data, "$mobile_screen_view"));
-        JSONObject engagement = find(data, "$mobile_session_engagement");
-        assertEquals("Home", engagement.getJSONObject("eventProperties")
-                .getString("screen_name"));
-        assertEquals(10_300, engagement.getJSONObject("eventProperties")
-                .getLong("engagement_duration_ms"));
+        long homeEngagementMs = 0;
+        for (int i = 0; i < data.length(); i++) {
+            JSONObject event = data.getJSONObject(i);
+            if (!"$mobile_session_engagement".equals(event.getString("event"))) continue;
+            assertEquals("Home", event.getJSONObject("eventProperties")
+                    .getString("screen_name"));
+            homeEngagementMs += event.getJSONObject("eventProperties")
+                    .getLong("engagement_duration_ms");
+        }
+        assertEquals(10_300, homeEngagementMs);
     }
 
     @Test
