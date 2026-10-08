@@ -203,7 +203,7 @@ final class MobileSession {
         List<MobileFact> facts = new ArrayList<>();
         reconcileClock(state, nowWall, nowElapsed, facts, false);
         boolean expired = state.sid != null && nowWall - state.lastActive >= SESSION_TIMEOUT_MS;
-        if (expired && automatic) {
+        if (expired && automatic && state.sessionStartEmitted) {
             facts.add(fact("$mobile_session_end", state, nowWall, null));
         }
         boolean newSession = state.sid == null || expired;

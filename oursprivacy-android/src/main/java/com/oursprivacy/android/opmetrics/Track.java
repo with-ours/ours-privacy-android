@@ -152,9 +152,11 @@ final class Track {
         final boolean havePerCall = perCall != null && perCall.length() > 0;
 
         if (!haveDefaultCustom && !haveDefaultConsent) {
-            // Fast path — no store-level defaults. Pass per-call through unchanged.
             if (!havePerCall) return null;
-            return shallowCopy(perCall);
+            final JSONObject copied = shallowCopy(perCall);
+            final JSONObject consent = copied.optJSONObject("consent");
+            if (consent != null && consent.length() == 0) copied.remove("consent");
+            return copied.length() == 0 ? null : copied;
         }
 
         if (!havePerCall && !haveDefaultCustom && !haveDefaultConsent) {

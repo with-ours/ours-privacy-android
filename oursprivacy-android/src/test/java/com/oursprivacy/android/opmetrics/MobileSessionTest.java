@@ -150,6 +150,18 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void expiredManualSessionDoesNotEmitEndBeforeCanonicalStart() {
+        MobileSession session = session("1.0", "10");
+        String manualSid = session.snapshot().sid();
+        clock.advance(MobileSession.SESSION_TIMEOUT_MS);
+
+        List<MobileSession.MobileFact> facts = recreated("1.0", "10").foreground(true);
+        assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
+                "$mobile_session_start"), names(facts));
+        assertNotEquals(manualSid, facts.get(2).snapshot().sid());
+    }
+
+    @Test
     public void twoActivityResumesAndBackgroundsProduceOneEngagementDelta() throws Exception {
         MobileSession session = session("1.0", "10");
         session.foreground(true);

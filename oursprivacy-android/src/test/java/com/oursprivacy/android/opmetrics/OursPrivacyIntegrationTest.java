@@ -4502,6 +4502,29 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void explicitEmptyConsentIsOmittedWithoutDefaults() throws Exception {
+        final OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+
+        op.identify(OursPrivacyUserProperties.builder()
+                .consent(new JSONObject())
+                .build());
+        op.track("page_viewed", null, OursPrivacyUserProperties.builder()
+                .city("Example")
+                .consent(new JSONObject())
+                .build());
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+
+        final JSONArray data = mNetwork.bodyAt(0).getJSONArray("data");
+        assertEquals(2, data.length());
+        assertTrue(data.getJSONObject(0).isNull("userProperties"));
+        final JSONObject trackUser = data.getJSONObject(1).getJSONObject("userProperties");
+        assertEquals("Example", trackUser.getString("city"));
+        assertFalse(trackUser.has("consent"));
+    }
+
+    @Test
     public void consentMergesWhenEitherSideHasData() throws Exception {
         final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
