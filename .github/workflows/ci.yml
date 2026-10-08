@@ -59,12 +59,9 @@ jobs:
       - name: Build library and demo
         run: ./gradlew :oursprivacy-android:assembleRelease :oursprivacydemo:assembleDebug
 
-      - name: Build demo against published SDK
-        run: ./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PpublishedSdkVersion=2.0.0
-
       - name: Verify SDK publication metadata
         run: |
-          ./gradlew :oursprivacy-android:publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false
+          ./gradlew :oursprivacy-android:publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false -Dmaven.repo.local="$PWD/build/maven-local"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -78,6 +75,9 @@ jobs:
           pom = ElementTree.parse(publication / "pom-default.xml")
           assert all(node.text != "kotlin-stdlib" for node in pom.iter("{*}artifactId"))
           PY
+
+      - name: Build demo against Maven publication
+        run: ./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PuseLocalPublished=true -Dmaven.repo.local="$PWD/build/maven-local"
 
   e2e:
     name: Demo emulator E2E

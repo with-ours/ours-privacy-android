@@ -376,7 +376,14 @@ The SDK tests under `src/test/` use Robolectric to verify the ingest envelope wi
 
 The command starts `tools/payload-recorder/server.py`, builds the demo with a test token and `RECORDER_URL`, runs the Compose UI test, and checks the recorded event payloads and SDK version. It needs Java 17, the Android SDK, and Python 3; it needs no Ours Privacy account. The same command runs in CI.
 
-**Test the published artifact:** `./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PpublishedSdkVersion=2.0.0` builds against the currently published SDK. Update `publishedSdkVersion` after a new version reaches Maven Central.
+**Test the packaged SDK before release:** Publish this branch to a repository-local Maven directory, then compile the demo against that artifact:
+
+```sh
+./gradlew :oursprivacy-android:publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false -Dmaven.repo.local="$PWD/build/maven-local"
+./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PuseLocalPublished=true -Dmaven.repo.local="$PWD/build/maven-local"
+```
+
+After a new version reaches Maven Central, use `-PusePublished=true -PpublishedSdkVersion=<released version>` without `-PuseLocalPublished` to verify the released artifact.
 
 ---
 
