@@ -12,14 +12,14 @@ class PayloadValidationTest(unittest.TestCase):
         events = [
             {
                 "event": "demo_event",
-                "visitor_id": "visitor",
+                "visitor_id": "e2e-token-visitor",
                 "distinct_id": "one",
                 "eventProperties": {"source": "demo"},
                 "defaultProperties": {"version": version},
             },
             {
                 "event": "$identify",
-                "visitor_id": "visitor",
+                "visitor_id": "e2e-token-visitor",
                 "distinct_id": "two",
                 "eventProperties": None,
                 "userProperties": {"external_id": "demo_user_1", "email": "demo@example.com"},
@@ -27,7 +27,7 @@ class PayloadValidationTest(unittest.TestCase):
             },
             {
                 "event": "view_item",
-                "visitor_id": "visitor",
+                "visitor_id": "e2e-token-visitor",
                 "distinct_id": "three",
                 "eventProperties": {"sku": "ABC-001"},
                 "userProperties": {"phone_number": "+1-555-0100"},
@@ -35,7 +35,7 @@ class PayloadValidationTest(unittest.TestCase):
             },
             {
                 "event": "$opt_in",
-                "visitor_id": "visitor",
+                "visitor_id": "e2e-token-visitor",
                 "distinct_id": "four",
                 "eventProperties": None,
                 "userProperties": None,
@@ -55,16 +55,16 @@ class PayloadValidationTest(unittest.TestCase):
                 },
             },
         ]
-        mobile_defaults = {
-            "version": version,
-            "sid": "session-one",
-            "mobile_session_started_at": "2026-10-06T12:00:00.000Z",
+        mobile_defaults = {"version": version, "sid": "1791288000000"}
+        mobile_properties = {
             "mobile_occurred_at": "2026-10-06T12:00:01.000Z",
-            "mobile_platform": "android",
             "mobile_contract_version": 1,
             "app_version": "1.0",
             "app_build": "1",
         }
+        for event in events:
+            event["defaultProperties"].update(mobile_defaults)
+            event["eventProperties"] = {**(event["eventProperties"] or {}), **mobile_properties}
         for index, (name, properties) in enumerate(
             [
                 ("$mobile_first_open", None),
@@ -82,7 +82,7 @@ class PayloadValidationTest(unittest.TestCase):
                     "event": name,
                     "visitor_id": "e2e-token-visitor",
                     "distinct_id": str(index),
-                    "eventProperties": properties,
+                    "eventProperties": {**(properties or {}), **mobile_properties},
                     "defaultProperties": deepcopy(mobile_defaults),
                 }
             )
@@ -95,6 +95,133 @@ class PayloadValidationTest(unittest.TestCase):
         envelope = json.loads(path.read_text())
         change(envelope)
         path.write_text(json.dumps(envelope))
+
+    def append_capacity_event(self, directory, count, metadata=None):
+        def append(body):
+            event = deepcopy(body["data"][0])
+            event.update(
+                event="capacity_event",
+                distinct_id="capacity-event-id",
+                eventProperties={f"field_{index}": f"value-{index}" for index in range(count)},
+            )
+            event["eventProperties"].update(metadata or {})
+            body["data"].append(event)
+        self.mutate_capture(directory, append)
+
+    def test_accepts_capacity_fallback_preserving_197_to_200_caller_properties(self):
+        for count in range(197, 201):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                self.append_capacity_event(directory, count)
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_missing_metadata_when_four_common_fields_fit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            self.append_capacity_event(directory, 196)
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_rejects_partial_metadata_on_capacity_fallback(self):
+        for key, value in (
+            ("mobile_contract_version", 1),
+            ("mobile_occurred_at", "2026-10-06T12:00:01.000Z"),
+            ("app_version", "1.0"),
+            ("app_build", "1"),
+        ):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                self.append_capacity_event(directory, 197, {key: value})
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
+    def test_rejects_sdk_metadata_that_overflows_200_event_properties(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            self.append_capacity_event(directory, 197, {
+                "mobile_contract_version": 1,
+                "mobile_occurred_at": "2026-10-06T12:00:01.000Z",
+                "app_version": "1.0",
+                "app_build": "1",
+            })
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
+
+    def test_accepts_serialized_size_fallback_preserving_one_ascii_property(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            properties = {"payload": "x" * 1048561}
+            assert len(json.dumps(properties, separators=(",", ":"))) == 1048575
+            self.append_capacity_event(directory, 0, properties)
+            validate(Path(directory), "2.0.0")
+
+    def test_rejects_serialized_properties_at_or_above_size_limit(self):
+        for value_length, metadata in (
+            (1048562, {}),
+            (1048561, {
+                "mobile_contract_version": 1,
+                "mobile_occurred_at": "2026-10-06T12:00:01.000Z",
+                "app_version": "1.0",
+                "app_build": "1",
+            }),
+        ):
+            with self.subTest(value_length=value_length), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                self.append_capacity_event(directory, 0, {
+                    "payload": "x" * value_length, **metadata,
+                })
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
+    def test_rejects_capacity_fallback_on_canonical_and_identify_events(self):
+        for name in ("$mobile_first_open", "$identify"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                def remove_metadata(body):
+                    event = next(event for event in body["data"] if event["event"] == name)
+                    event["eventProperties"] = {
+                        f"field_{index}": f"value-{index}" for index in range(197)
+                    }
+                self.mutate_capture(directory, remove_metadata)
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
+    def test_rejects_uuid_or_non_string_sid(self):
+        for sid in ("legacy-uuid", 1791288000000, "179128800000", "17912880000000"):
+            with self.subTest(sid=sid), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                def change_sid(body):
+                    for event in body["data"]:
+                        event["defaultProperties"]["sid"] = sid
+                self.mutate_capture(directory, change_sid)
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
+    def test_rejects_old_default_metadata_and_retired_fields(self):
+        for bag, key, value in (
+            ("defaultProperties", "mobile_contract_version", 1),
+            ("defaultProperties", "mobile_occurred_at", "2026-10-06T12:00:01.000Z"),
+            ("defaultProperties", "app_version", "1.0"),
+            ("defaultProperties", "app_build", "1"),
+            ("defaultProperties", "mobile_platform", "android"),
+            ("eventProperties", "mobile_platform", "android"),
+            ("defaultProperties", "mobile_session_started_at", "2026-10-06T12:00:00.000Z"),
+            ("eventProperties", "mobile_session_started_at", "2026-10-06T12:00:00.000Z"),
+        ):
+            with self.subTest(bag=bag, key=key), tempfile.TemporaryDirectory() as directory:
+                self.write_capture(directory, "2.0.0")
+                def add_old_field(body):
+                    body["data"][0][bag][key] = value
+                self.mutate_capture(directory, add_old_field)
+                with self.assertRaises(AssertionError):
+                    validate(Path(directory), "2.0.0")
+
+    def test_rejects_mixed_visitors_in_an_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_capture(directory, "2.0.0")
+            self.mutate_capture(directory, lambda body: body["data"][0].update(visitor_id="other"))
+            with self.assertRaises(AssertionError):
+                validate(Path(directory), "2.0.0")
 
     def test_rejects_each_missing_canonical_fact_and_booking(self):
         for missing in (
@@ -252,7 +379,7 @@ class PayloadValidationTest(unittest.TestCase):
             self.write_capture(directory, "2.0.0")
             def wrong_build(body):
                 booking = next(event for event in body["data"] if event["event"] == "appointment_booked")
-                booking["defaultProperties"]["app_build"] = "999"
+                booking["eventProperties"]["app_build"] = "999"
             self.mutate_capture(directory, wrong_build)
             with self.assertRaises(AssertionError):
                 validate(Path(directory), "2.0.0")
@@ -304,7 +431,7 @@ class PayloadValidationTest(unittest.TestCase):
                     if field == "time":
                         screen[field] = value
                     else:
-                        screen["defaultProperties"][field] = value
+                        screen["eventProperties"][field] = value
                 self.mutate_capture(directory, bad_time)
                 with self.assertRaises(AssertionError):
                     validate(Path(directory), "2.0.0")
@@ -353,7 +480,7 @@ class PayloadValidationTest(unittest.TestCase):
             envelope["data"].append(
                 {
                     "event": "$app_open",
-                    "visitor_id": "visitor",
+                    "visitor_id": "e2e-token-visitor",
                     "distinct_id": "four",
                     "defaultProperties": {"version": "old"},
                 }

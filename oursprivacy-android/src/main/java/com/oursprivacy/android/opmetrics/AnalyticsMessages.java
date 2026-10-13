@@ -68,7 +68,7 @@ import java.util.concurrent.TimeUnit;
     void enqueue(JSONObject event) {
         final Message m = Message.obtain();
         m.what = ENQUEUE_EVENT;
-        m.obj = new QueuedEvent(event, mPersistence.queueGeneration());
+        m.obj = new QueuedEvent(mPersistence.captureIdentityMode(event), mPersistence.queueGeneration());
         mWorker.runMessage(m);
     }
 
@@ -260,15 +260,22 @@ import java.util.concurrent.TimeUnit;
             final int batchSize = mConfig.getFlushBatchSize();
             while (mPersistence.getQueueSize() > 0) {
                 final PersistentIdentity.QueueSnapshot snapshot = mPersistence.getQueueSnapshotForFlush();
-                final int take = Math.min(batchSize, snapshot.events.length());
+                final JSONObject first = snapshot.events.optJSONObject(0);
+                if (first == null) return;
+                final boolean manuallySetId = snapshot.manuallySetId(first);
                 final JSONArray batch = new JSONArray();
-                for (int i = 0; i < take; i++) {
-                    batch.put(snapshot.events.opt(i));
+                for (int i = 0; i < Math.min(batchSize, snapshot.events.length()); i++) {
+                    final JSONObject event = snapshot.events.optJSONObject(i);
+                    if (event == null
+                            || !first.optString("visitor_id").equals(event.optString("visitor_id"))
+                            || manuallySetId != snapshot.manuallySetId(event)) break;
+                    batch.put(event);
                 }
+                final int take = batch.length();
 
                 final String body;
                 try {
-                    body = buildEnvelope(batch).toString();
+                    body = buildEnvelope(batch, manuallySetId).toString();
                 } catch (JSONException e) {
                     OPLog.e(LOGTAG, "Failed to build envelope; will retry batch", e);
                     return;
@@ -297,8 +304,7 @@ import java.util.concurrent.TimeUnit;
                     }
                     final BatchAcknowledgment acknowledgment;
                     try {
-                        acknowledgment = parseAcknowledgment(response, batch,
-                                mPersistence.hasIndexedIngestMode(mToken));
+                        acknowledgment = parseAcknowledgment(response, batch);
                     } catch (JSONException e) {
                         OPLog.w(LOGTAG, "Invalid ingest response; will retry batch");
                         return;
@@ -329,8 +335,8 @@ import java.util.concurrent.TimeUnit;
             }
         }
 
-        private BatchAcknowledgment parseAcknowledgment(byte[] response, JSONArray batch,
-                                                        boolean indexedMode) throws JSONException {
+        private BatchAcknowledgment parseAcknowledgment(byte[] response, JSONArray batch)
+                throws JSONException {
             final JSONObject result = new JSONObject(new String(response, StandardCharsets.UTF_8));
             if (!Boolean.TRUE.equals(result.opt("success"))
                     || !(result.opt("visitor_id") instanceof String)) {
@@ -338,7 +344,6 @@ import java.util.concurrent.TimeUnit;
             }
             final boolean indexed = result.has("accepted") || result.has("rejected");
             if (!indexed) {
-                if (indexedMode) throw new JSONException("Indexed ingest response required");
                 return new BatchAcknowledgment(false, new ArrayList<>());
             }
             final Object acceptedValue = result.opt("accepted");
@@ -380,11 +385,25 @@ import java.util.concurrent.TimeUnit;
             throw new JSONException("Expected integer");
         }
 
-        private JSONObject buildEnvelope(JSONArray batch) throws JSONException {
+        private JSONObject buildEnvelope(JSONArray batch, boolean manuallySetId) throws JSONException {
             final JSONObject envelope = new JSONObject();
             envelope.put("token", mToken);
-            envelope.put("is_manually_set_id", mPersistence.isManuallySetId());
-            envelope.put("data", batch);
+            envelope.put("is_manually_set_id", manuallySetId);
+            final JSONArray data = new JSONArray(batch.toString());
+            for (int i = 0; i < data.length(); i++) {
+                final JSONObject event = data.getJSONObject(i);
+                final JSONObject defaults = event.optJSONObject("defaultProperties");
+                final JSONObject properties = event.optJSONObject("eventProperties");
+                if (defaults != null && (defaults.has("mobile_session_started_at")
+                        || defaults.has("mobile_platform")
+                        || (properties != null && properties.has("mobile_contract_version")
+                        && defaults.has("sid")
+                        && !defaults.optString("sid").matches("[0-9]{13}")))) {
+                    throw new JSONException("Unmigrated mobile session");
+                }
+                event.remove(PersistentIdentity.QUEUED_MANUAL_ID);
+            }
+            envelope.put("data", data);
             return envelope;
         }
     }

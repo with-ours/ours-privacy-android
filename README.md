@@ -188,7 +188,7 @@ Fires a `$identify` event. The same merge as `track()` applies. Caller stitches 
 
 #### `void flush()`
 
-Forces a flush of the event queue. The worker drains in batches (default 50, max 50) until the queue is empty.
+Forces a flush of the event queue. Batches contain at most 50 events sharing the visitor ID and identity mode captured at enqueue.
 
 Set a rejection listener at initialization if you need to inspect events that the server rejects:
 
@@ -200,7 +200,7 @@ OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
     .build();
 ```
 
-The listener runs on the SDK worker after the batch is durably removed from the queue. It receives only the rejected event's `distinct_id` and stable code (for example, `mobile_occurred_at_future`); event properties, patient fields, and payloads are never passed to it. Valid indexed responses acknowledge accepted and rejected items together. Network failures and invalid responses leave the batch queued. Complete legacy success responses remain supported until that source token receives an indexed response; indexed mode then persists across app restarts for that token.
+The listener runs on the SDK worker after the batch is durably removed from the queue. It receives only the rejected event's `distinct_id` and server-supplied rejection code; event properties, patient fields, and payloads are never passed to it. Valid indexed responses acknowledge accepted and rejected items together. Network failures and invalid responses leave the batch queued. Legacy `{success:true, visitor_id}` responses remain supported after indexed responses and app restarts.
 
 #### `void reset()`
 
@@ -236,7 +236,11 @@ With `trackAutomaticEvents(true)`, the SDK emits these lifecycle facts:
 
 Sessions expire after 30 minutes of inactivity. Engagement durations are integer milliseconds and a screen change assigns the preceding positive delta to the previous screen. Manual `track()` and `trackScreen()` still work when automatic tracking is off. Full `optOutTracking()` suppresses all of them and rotates `visitor_id`; a later opt-in starts a new session under that visitor.
 
-Every tracked mobile event carries SDK-owned `defaultProperties`: `sid`, `mobile_session_started_at`, `mobile_occurred_at` (UTC ISO-8601 with milliseconds), `mobile_platform: "android"`, `mobile_contract_version: 1`, and `app_version` / `app_build` when available. `version` remains the SDK version. The SDK does not set top-level `time`. Canonical `$mobile_*` facts omit caller default event/user properties and attribution; manual `track()` events keep them.
+Every newly tracked event carries `defaultProperties.sid`, the session start in epoch milliseconds as a 13-digit decimal string. SDK-owned `eventProperties` include `mobile_contract_version: 1`, `mobile_occurred_at` (UTC ISO-8601 with milliseconds), and `app_version` / `app_build` when available. SDK metadata overrides caller properties. Existing OS, device, and SDK `version` defaults retain their meanings; `mobile_session_started_at`, `mobile_platform`, and top-level `time` are omitted. Canonical `$mobile_*` facts omit caller event properties, attribution, and user properties; manual events retain caller data.
+
+Event properties allow up to 200 keys and must serialize to fewer than 1,048,576 UTF-16 code units. Up to 196 ordinary caller keys leave room for all four common SDK fields within the key limit. If SDK metadata exceeds either budget, valid caller data is preserved without those fields. Such events upload without contributing to Mobile Analytics; queued metadata overflows use the same fallback.
+
+Stored UUID sessions rotate without repeating first-open. Pending facts and queued events retain their captured IDs and timestamps; queued UUID session IDs migrate from a valid stored session-start timestamp. Legacy rows with an invalid or missing start upload without `sid`; activity sessions are unavailable for those rows, and queue processing continues.
 
 During migration, the enabled lifecycle path also emits legacy `$app_open`, `$ae_first_open`, `$ae_session`, and `$ae_updated`. Count the canonical `$mobile_*` events for Mobile Analytics; legacy events have different meanings and no equivalent screen coverage.
 
@@ -300,7 +304,14 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
       "event": "Purchase",
       "visitor_id": "1f0c…",
       "distinct_id": "ae8a…",
-      "eventProperties": { "value": 49.99, "currency": "USD" },
+      "eventProperties": {
+        "value": 49.99,
+        "currency": "USD",
+        "mobile_contract_version": 1,
+        "mobile_occurred_at": "2026-10-06T12:00:05.000Z",
+        "app_version": "2.5.1",
+        "app_build": "42"
+      },
       "userProperties": null,
       "defaultProperties": {
         "device_type": "mobile",
@@ -311,13 +322,7 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
         "screen_width": 1080,
         "screen_height": 2400,
         "version": "<sdk-version>",
-        "sid": "f6c4e445-5368-4d65-8c47-54099356f561",
-        "mobile_session_started_at": "2026-10-06T12:00:00.000Z",
-        "mobile_occurred_at": "2026-10-06T12:00:05.000Z",
-        "mobile_platform": "android",
-        "mobile_contract_version": 1,
-        "app_version": "2.5.1",
-        "app_build": "42"
+        "sid": "1791288000000"
       }
     }
   ]
@@ -327,8 +332,8 @@ Every flush is a single JSON POST to `{serverURL}/ingest` with this shape:
 - `visitor_id` is stable per install (or per `setVisitorId(…)`).
 - `distinct_id` is a fresh UUID per event.
 - `userProperties` is `null` when the caller passes no per-call properties and no default user bags are configured.
-- `eventProperties` is `null` when the merged event-property bag is empty.
-- Mobile occurrence time lives in `defaultProperties.mobile_occurred_at`, not top-level `time`.
+- `eventProperties` includes SDK mobile metadata, except for manual events where it would exceed the key or serialized size limit.
+- Mobile occurrence time lives in `eventProperties.mobile_occurred_at`.
 - Unknown fields are dropped server-side.
 
 **Naming**: camelCase at the API surface (`externalId`, `phoneNumber`, `customProperties`); snake_case on the wire (`external_id`, `phone_number`, `custom_properties`).

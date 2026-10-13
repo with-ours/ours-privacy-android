@@ -45,6 +45,36 @@ public class MobileSessionTest {
     }
 
     @Test
+    public void storedUuidSessionRotatesAndPendingFactsKeepTheirIdsAndOriginalStart()
+            throws Exception {
+        PersistentIdentity.MobileState state = new PersistentIdentity.MobileState();
+        state.sid = "legacy-session-uuid";
+        state.startedAt = clock.wall - 5_000;
+        state.lastActive = clock.wall - 1_000;
+        state.firstOpenAccepted = true;
+        state.sessionStartEmitted = true;
+        state.pendingFacts.put(new JSONObject().put("id", "pending-id")
+                .put("visitor_id", "prior-visitor").put("event", "$mobile_app_open")
+                .put("sid", state.sid).put("started_at", state.startedAt)
+                .put("occurred_at", state.lastActive).put("app_version", "1.0")
+                .put("app_build", "10"));
+        identity.saveMobileState(TOKEN, state);
+        MobileSession session = recreated("2.0", "20");
+        List<MobileSession.MobileFact> facts = session.foreground(true);
+        assertEquals(List.of("$mobile_app_open", "$mobile_session_start"), names(facts));
+        assertEquals(Long.toString(clock.wall), facts.get(0).snapshot().sid());
+        MobileSession.MobileFact pending = session.pendingFacts().get(0);
+        assertEquals("pending-id", pending.id());
+        assertEquals("prior-visitor", pending.visitorId());
+        assertEquals(Long.toString(clock.wall - 5_000), pending.snapshot().sid());
+        assertTrue(identity.enqueueMobileFact(TOKEN, pending.id(), queued(pending)));
+        assertTrue(identity.getMobileState(TOKEN).firstOpenAccepted);
+        assertEquals("pending-id", identity.getQueueSnapshot().getJSONObject(0)
+                .getString("distinct_id"));
+        assertEquals(Long.toString(clock.wall), recreated("2.0", "20").snapshot().sid());
+    }
+
+    @Test
     public void firstEligibleForegroundEmitsThreeFactsOnce() {
         MobileSession session = session("1.0", "10");
 
@@ -70,21 +100,20 @@ public class MobileSessionTest {
     }
 
     @Test
-    public void snapshotHasExactCanonicalDefaultsAndNoTopLevelTime() throws Exception {
+    public void snapshotSeparatesDecimalSessionDefaultFromEventMetadata() throws Exception {
         clock.wall = 1_759_708_795_000L;
         MobileSession session = session("2.1", "42");
         MobileSession.MobileFact first = session.foreground(true).get(0);
         JSONObject defaults = first.snapshot().defaultProperties();
 
-        assertEquals(7, defaults.length());
-        assertEquals(first.snapshot().sid(), defaults.getString("sid"));
-        assertEquals("2025-10-05T23:59:55.000Z",
-                defaults.getString("mobile_session_started_at"));
-        assertEquals("2025-10-05T23:59:55.000Z", defaults.getString("mobile_occurred_at"));
-        assertEquals("android", defaults.getString("mobile_platform"));
-        assertEquals(1, defaults.getInt("mobile_contract_version"));
-        assertEquals("2.1", defaults.getString("app_version"));
-        assertEquals("42", defaults.getString("app_build"));
+        assertEquals(1, defaults.length());
+        assertEquals("1759708795000", defaults.getString("sid"));
+        JSONObject metadata = first.snapshot().eventProperties();
+        assertEquals(4, metadata.length());
+        assertEquals("2025-10-05T23:59:55.000Z", metadata.getString("mobile_occurred_at"));
+        assertEquals(1, metadata.getInt("mobile_contract_version"));
+        assertEquals("2.1", metadata.getString("app_version"));
+        assertEquals("42", metadata.getString("app_build"));
         assertFalse(defaults.has("time"));
         assertEquals(0, first.eventProperties().length());
         first.eventProperties().put("screen_name", "mutated");
@@ -445,10 +474,10 @@ public class MobileSessionTest {
         List<MobileSession.MobileFact> reopened = recreated("1.0", "10").foreground(true);
         assertEquals(List.of("$mobile_app_open"), names(reopened));
         assertEquals(sid, reopened.get(0).snapshot().sid());
-        assertEquals("2025-10-05T23:59:55.000Z", reopened.get(0).snapshot()
-                .defaultProperties().getString("mobile_session_started_at"));
+        assertEquals("1759708795000", reopened.get(0).snapshot()
+                .defaultProperties().getString("sid"));
         assertEquals("2025-10-06T00:00:06.000Z", reopened.get(0).snapshot()
-                .defaultProperties().getString("mobile_occurred_at"));
+                .eventProperties().getString("mobile_occurred_at"));
     }
 
     @Test
@@ -474,6 +503,7 @@ public class MobileSessionTest {
         session.enable();
         String sid = session.foreground(true).get(0).snapshot().sid();
         acceptFirstOpen(session);
+        clock.advance(1);
         session.disable();
         session.enable();
         List<MobileSession.MobileFact> reopened = session.foreground(true);
@@ -498,6 +528,7 @@ public class MobileSessionTest {
         MobileSession session = session("1.0", "10");
         String sid = session.foreground(true).get(0).snapshot().sid();
         acceptFirstOpen(session);
+        clock.advance(1);
         identity.reset();
 
         List<MobileSession.MobileFact> facts = recreated("1.0", "10").foreground(true);
@@ -510,6 +541,7 @@ public class MobileSessionTest {
         MobileSession session = session("1.0", "10");
         String sid = session.foreground(true).get(0).snapshot().sid();
         acceptFirstOpen(session);
+        clock.advance(1);
         identity.optOutAndClear();
 
         MobileSession optedOut = recreated("1.0", "10");
@@ -745,7 +777,7 @@ public class MobileSessionTest {
         assertTrue(identity.getMobileState(TOKEN).firstOpenAccepted);
         JSONObject queued = identity.getQueueSnapshot().getJSONObject(0);
         assertEquals(fetched.id(), queued.getString("distinct_id"));
-        assertEquals(MobileSession.utc(occurredAt), queued.getJSONObject("defaultProperties")
+        assertEquals(MobileSession.utc(occurredAt), queued.getJSONObject("eventProperties")
                 .getString("mobile_occurred_at"));
     }
 
@@ -759,7 +791,9 @@ public class MobileSessionTest {
         List<MobileSession.MobileFact> otherFacts = other.foreground(true);
         assertEquals(List.of("$mobile_first_open", "$mobile_app_open",
                 "$mobile_session_start"), names(otherFacts));
-        assertNotEquals(firstSid, otherFacts.get(0).snapshot().sid());
+        assertEquals(firstSid, otherFacts.get(0).snapshot().sid());
+        assertFalse(identity.getMobileState("different-token").firstOpenAccepted);
+        assertTrue(identity.getMobileState(TOKEN).firstOpenAccepted);
     }
 
     @Test
@@ -854,7 +888,8 @@ public class MobileSessionTest {
                     .put("event", fact.eventName())
                     .put("visitor_id", fact.visitorId())
                     .put("distinct_id", fact.id())
-                    .put("eventProperties", fact.eventProperties())
+                    .put("eventProperties", Track.mergeOnto(fact.eventProperties(),
+                            fact.snapshot().eventProperties()))
                     .put("userProperties", JSONObject.NULL)
                     .put("defaultProperties", fact.snapshot().defaultProperties());
         } catch (Exception e) {

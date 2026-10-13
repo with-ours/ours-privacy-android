@@ -17,6 +17,7 @@ import android.os.Looper;
 
 import androidx.test.core.app.ApplicationProvider;
 
+import com.oursprivacy.android.util.OPLog;
 import com.oursprivacy.android.util.OfflineMode;
 import com.oursprivacy.android.util.ProxyServerInteractor;
 import com.oursprivacy.android.util.RemoteService;
@@ -273,8 +274,9 @@ public class OursPrivacyIntegrationTest {
             for (String event : List.of("appointment_booked", "$identify", "$mobile_screen_view")) {
                 JSONObject defaults = find(queue, event).getJSONObject("defaultProperties");
                 assertTrue(defaults.has("sid"));
-                assertTrue(defaults.has("mobile_session_started_at"));
-                assertTrue(defaults.has("mobile_occurred_at"));
+                assertTrue(defaults.getString("sid").matches("[0-9]{13}"));
+                assertTrue(find(queue, event).getJSONObject("eventProperties")
+                        .has("mobile_occurred_at"));
             }
             assertTrue(eventNames(queue).indexOf("$mobile_first_open")
                     < eventNames(queue).indexOf("$opt_in"));
@@ -1009,8 +1011,8 @@ public class OursPrivacyIntegrationTest {
         assertEquals("stitched-visitor", second.getString("visitor_id"));
         assertEquals(first.getJSONObject("defaultProperties").getString("sid"),
                 second.getJSONObject("defaultProperties").getString("sid"));
-        assertEquals("android", second.getJSONObject("defaultProperties")
-                .getString("mobile_platform"));
+        assertEquals("Android", second.getJSONObject("defaultProperties")
+                .getString("os_name"));
         assertFalse(first.getJSONObject("eventProperties").has("caller_field"));
         assertTrue(first.isNull("userProperties"));
         assertFalse(first.getJSONObject("defaultProperties").has("utm_source"));
@@ -1073,15 +1075,15 @@ public class OursPrivacyIntegrationTest {
                 .getPackageInfo(mContext.getPackageName(), 0);
         assertEquals(first.getJSONObject("defaultProperties").getString("sid"),
                 defaults.getString("sid"));
-        assertEquals("android", defaults.getString("mobile_platform"));
-        assertEquals(1, defaults.getInt("mobile_contract_version"));
-        assertEquals(packageInfo.versionName, defaults.getString("app_version"));
+        JSONObject metadata = booked.getJSONObject("eventProperties");
+        assertEquals("Android", defaults.getString("os_name"));
+        assertEquals(1, metadata.getInt("mobile_contract_version"));
+        assertEquals(packageInfo.versionName, metadata.getString("app_version"));
         assertEquals(Long.toString(packageInfo.getLongVersionCode()),
-                defaults.getString("app_build"));
+                metadata.getString("app_build"));
         assertEquals(OursPrivacyAPI.VERSION, defaults.getString("version"));
-        assertTrue(defaults.getString("mobile_session_started_at")
-                .matches("\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z"));
-        assertTrue(defaults.getString("mobile_occurred_at")
+        assertTrue(defaults.getString("sid").matches("[0-9]{13}"));
+        assertTrue(booked.getJSONObject("eventProperties").getString("mobile_occurred_at")
                 .matches("\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z"));
         assertFalse(booked.has("time"));
         assertEquals("booking-1", booked.getJSONObject("eventProperties")
@@ -1120,7 +1122,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(1, queuedEventCount("$mobile_first_open"));
         assertTrue(mobileState().getBoolean("first_open_accepted"));
         JSONObject first = queuedEvent("$mobile_first_open");
-        assertTrue(first.isNull("eventProperties"));
+        assertEquals(4, first.getJSONObject("eventProperties").length());
         assertTrue(first.isNull("userProperties"));
         assertFalse(first.getJSONObject("defaultProperties").has("caller_default"));
         automatic.flush();
@@ -1161,8 +1163,8 @@ public class OursPrivacyIntegrationTest {
         assertEquals(deepLink.getJSONObject("defaultProperties").getString("sid"),
                 booking.getJSONObject("defaultProperties").getString("sid"));
         assertEquals("app", booking.getJSONObject("defaultProperties").getString("utm_source"));
-        assertEquals("android", deepLink.getJSONObject("defaultProperties")
-                .getString("mobile_platform"));
+        assertEquals("Android", deepLink.getJSONObject("defaultProperties")
+                .getString("os_name"));
         assertFalse(booking.has("time"));
     }
 
@@ -1185,7 +1187,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals("visitor-from-web", opened.getString("visitor_id"));
         assertEquals("campaign", opened.getJSONObject("defaultProperties")
                 .getString("utm_source"));
-        assertTrue(opened.isNull("eventProperties"));
+        assertFalse(opened.getJSONObject("eventProperties").has("url"));
         assertFalse(data.toString().contains("https://example.test"));
         assertFalse(data.toString().contains("patient_email"));
         assertFalse(data.toString().contains("secret"));
@@ -1214,7 +1216,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals("visitor-from-web", opened.getString("visitor_id"));
         assertEquals("campaign", opened.getJSONObject("defaultProperties")
                 .getString("utm_source"));
-        assertTrue(opened.isNull("eventProperties"));
+        assertFalse(opened.getJSONObject("eventProperties").has("url"));
         assertFalse(opened.toString().contains("https://example.test"));
         assertFalse(opened.toString().contains("patient_email"));
     }
@@ -1314,7 +1316,7 @@ public class OursPrivacyIntegrationTest {
         JSONObject queued = queuedEvent("$mobile_first_open");
         assertEquals(id, queued.getString("distinct_id"));
         assertEquals(visitor, queued.getString("visitor_id"));
-        assertEquals(MobileSession.utc(occurredAt), queued.getJSONObject("defaultProperties")
+        assertEquals(MobileSession.utc(occurredAt), queued.getJSONObject("eventProperties")
                 .getString("mobile_occurred_at"));
         restarted.onForeground();
         assertEquals(1, queuedEventCount("$mobile_first_open"));
@@ -1398,9 +1400,9 @@ public class OursPrivacyIntegrationTest {
                 .getString("previous_app_version"));
         assertEquals("42", update.getJSONObject("eventProperties")
                 .getString("previous_app_build"));
-        JSONObject defaults = update.getJSONObject("defaultProperties");
-        assertEquals("3.0.0", defaults.getString("app_version"));
-        assertEquals("43", defaults.getString("app_build"));
+        JSONObject metadata = update.getJSONObject("eventProperties");
+        assertEquals("3.0.0", metadata.getString("app_version"));
+        assertEquals("43", metadata.getString("app_build"));
         assertEquals(0, count(data, "$mobile_first_open"));
     }
 
@@ -1426,9 +1428,9 @@ public class OursPrivacyIntegrationTest {
         restarted.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .trackAutomaticEvents(true).build());
         JSONObject firstOpen = queuedEvent("$mobile_first_open");
-        JSONObject defaults = firstOpen.getJSONObject("defaultProperties");
-        assertFalse(defaults.has("app_version"));
-        assertEquals("42", defaults.getString("app_build"));
+        JSONObject metadata = firstOpen.getJSONObject("eventProperties");
+        assertFalse(metadata.has("app_version"));
+        assertEquals("42", metadata.getString("app_build"));
     }
 
     @Test
@@ -1450,8 +1452,7 @@ public class OursPrivacyIntegrationTest {
         JSONObject firstOpen = find(mNetwork.bodyAt(0).getJSONArray("data"),
                 "$mobile_first_open");
         assertEquals(id, firstOpen.getString("distinct_id"));
-        assertTrue(firstOpen.isNull("eventProperties")
-                || firstOpen.getJSONObject("eventProperties").length() == 0);
+        assertEquals(4, firstOpen.getJSONObject("eventProperties").length());
     }
 
     @Test
@@ -1522,7 +1523,7 @@ public class OursPrivacyIntegrationTest {
         stitched.track("appointment_booked");
         stitched.flush();
         assertTrue(stitched.awaitWorkerIdle(IDLE_TIMEOUT_MS));
-        JSONObject booking = find(mNetwork.bodyAt(0).getJSONArray("data"),
+        JSONObject booking = find(allCapturedData(),
                 "appointment_booked");
         assertEquals("new-visitor", booking.getString("visitor_id"));
         assertNotEquals(oldSid, booking.getJSONObject("defaultProperties")
@@ -1557,7 +1558,7 @@ public class OursPrivacyIntegrationTest {
                 "$mobile_first_open");
         assertEquals(id, accepted.getString("distinct_id"));
         assertEquals(MobileSession.utc(occurredAt), accepted
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
     }
 
     @Test
@@ -1577,7 +1578,7 @@ public class OursPrivacyIntegrationTest {
         op.onBackground();
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
 
-        JSONArray data = mNetwork.bodyAt(0).getJSONArray("data");
+        JSONArray data = allCapturedData();
         assertEquals(1, count(data, "$mobile_app_open"));
         assertEquals(2, count(data, "$mobile_session_engagement"));
         JSONObject firstEngagement = nth(data, "$mobile_session_engagement", 0);
@@ -1692,7 +1693,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(1, queuedEventCount("$mobile_app_open"));
         assertEquals(1, queuedEventCount("$mobile_session_start"));
         assertEquals(MobileSession.utc(resumedAt), queuedEvent("$mobile_app_open")
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         clock.advance(10_000);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(10_000));
@@ -1734,12 +1735,12 @@ public class OursPrivacyIntegrationTest {
         assertEquals(2, count(recoveredData, "$mobile_app_open"));
         assertEquals(1, count(recoveredData, "$mobile_session_start"));
         assertEquals(MobileSession.utc(resumedAt), nth(recoveredData, "$mobile_app_open", 1)
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         JSONObject priorEngagement = nth(recoveredData, "$mobile_session_engagement", 0);
         assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), priorEngagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         clock.advance(10_000);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(10_000));
@@ -1801,11 +1802,11 @@ public class OursPrivacyIntegrationTest {
         assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), priorEngagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         JSONObject resumedOpen = nth(queue, "$mobile_app_open", 1);
         assertEquals(originalVisitor, resumedOpen.getString("visitor_id"));
         assertEquals(MobileSession.utc(resumedAt), resumedOpen
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertEquals("new-visitor", nth(queue, "$mobile_session_start", 2)
                 .getString("visitor_id"));
         assertTrue(eventNames(queue).indexOf(AutomaticEvents.SESSION)
@@ -1893,7 +1894,7 @@ public class OursPrivacyIntegrationTest {
         JSONObject resumedOpen = nth(queue, "$mobile_app_open", 1);
         assertEquals(originalVisitor, resumedOpen.getString("visitor_id"));
         assertEquals(MobileSession.utc(resumedAt), resumedOpen
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertFalse(resumedOpen.getJSONObject("defaultProperties").has("utm_source"));
         JSONObject deepLink = find(queue, "$deep_link_opened");
         assertEquals("stitched-visitor", deepLink.getString("visitor_id"));
@@ -1988,12 +1989,12 @@ public class OursPrivacyIntegrationTest {
         assertEquals(newSid, find(queue, "appointment_booked")
                 .getJSONObject("defaultProperties").getString("sid"));
         assertEquals(MobileSession.utc(resumedAt), nth(queue, "$mobile_app_open", 1)
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         JSONObject priorEngagement = nth(queue, "$mobile_session_engagement", 0);
         assertEquals(1_200, priorEngagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), priorEngagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
         assertEquals(1, queuedEventCount("appointment_booked"));
@@ -2047,7 +2048,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals("Home", priorEngagement.getJSONObject("eventProperties")
                 .getString("screen_name"));
         assertEquals(MobileSession.utc(pausedAt), priorEngagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
         assertEquals(2, queuedEventCount("$mobile_screen_view"));
@@ -2201,13 +2202,13 @@ public class OursPrivacyIntegrationTest {
                 < eventNames(queue).indexOf("$mobile_screen_view"));
         assertEquals(open.getJSONObject("defaultProperties").getString("sid"),
                 screen.getJSONObject("defaultProperties").getString("sid"));
-        assertTrue(open.getJSONObject("defaultProperties")
+        assertTrue(open.getJSONObject("eventProperties")
                 .getString("mobile_occurred_at")
                 .compareTo(MobileSession.utc(pausedAt)) <= 0);
         assertEquals(1_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
     }
 
     @Test
@@ -2507,7 +2508,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(1_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertEquals(sid, engagement.getJSONObject("defaultProperties").getString("sid"));
         assertEquals(1, count(data, "$mobile_first_open"));
         assertEquals(2, count(data, "$mobile_app_open"));
@@ -2694,7 +2695,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(10_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         clock.advance(MobileSession.SESSION_TIMEOUT_MS
                 - OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY);
@@ -2732,12 +2733,12 @@ public class OursPrivacyIntegrationTest {
                 .getJSONObject("defaultProperties").getString("sid");
         JSONObject booking = find(firstData, "appointment_booked");
         assertEquals(MobileSession.utc(pausedAt + 250), booking
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         JSONObject engagement = find(firstData, "$mobile_session_engagement");
         assertEquals(10_000, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
 
         clock.advance(MobileSession.SESSION_TIMEOUT_MS
                 - OursPrivacyActivityLifecycleCallbacks.CHECK_DELAY);
@@ -2793,9 +2794,9 @@ public class OursPrivacyIntegrationTest {
         assertEquals("Schedule", engagement.getJSONObject("eventProperties")
                 .getString("screen_name"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertEquals(MobileSession.utc(pausedAt + 250), find(data, "appointment_booked")
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertEquals(2, count(data, "$mobile_screen_view"));
         assertEquals(9_900, mobileState().getLong("accumulated_ms"));
 
@@ -2837,7 +2838,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(9_900, engagement.getJSONObject("eventProperties")
                 .getLong("engagement_duration_ms"));
         assertEquals(MobileSession.utc(pausedAt), engagement
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         assertEquals(initialSid, engagement.getJSONObject("defaultProperties").getString("sid"));
         assertEquals(0, mobileState().getLong("accumulated_ms"));
 
@@ -3116,6 +3117,7 @@ public class OursPrivacyIntegrationTest {
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
         assertEquals(0, mNetwork.callCount());
 
+        clock.advance(1);
         op.optInTracking();
         op.onForeground();
         op.flush();
@@ -3227,7 +3229,7 @@ public class OursPrivacyIntegrationTest {
         assertEquals(sid, queue.getJSONObject(3).getJSONObject("defaultProperties")
                 .getString("sid"));
         assertEquals(occurredAt, queue.getJSONObject(3)
-                .getJSONObject("defaultProperties").getString("mobile_occurred_at"));
+                .getJSONObject("eventProperties").getString("mobile_occurred_at"));
         for (int i = 0; i < 4; i++) {
             assertEquals(visitor, queue.getJSONObject(i).getString("visitor_id"));
             assertEquals(sid, queue.getJSONObject(i).getJSONObject("defaultProperties")
@@ -3294,7 +3296,7 @@ public class OursPrivacyIntegrationTest {
             JSONObject defaults = item.getJSONObject("defaultProperties");
             if (i > 0) assertEquals("mobile", defaults.getString("utm_source"));
             assertEquals(sid, defaults.getString("sid"));
-            assertEquals(occurredAt, defaults.getString("mobile_occurred_at"));
+            assertEquals(occurredAt, item.getJSONObject("eventProperties").getString("mobile_occurred_at"));
         }
         assertEquals("booking-10", queue.getJSONObject(6)
                 .getJSONObject("eventProperties").getString("appointment_id"));
@@ -3647,10 +3649,10 @@ public class OursPrivacyIntegrationTest {
         JSONObject held = queue.getJSONObject(3);
         assertEquals(originalVisitor, held.getString("visitor_id"));
         assertEquals(originalSid, held.getJSONObject("defaultProperties").getString("sid"));
-        assertEquals(originalOccurredAt, held.getJSONObject("defaultProperties")
+        assertEquals(originalOccurredAt, held.getJSONObject("eventProperties")
                 .getString("mobile_occurred_at"));
         assertEquals("new-visitor", queue.getJSONObject(6).getString("visitor_id"));
-        assertNotEquals(originalSid, queue.getJSONObject(6)
+        assertEquals(Long.toString(clock.wall - 2_000), queue.getJSONObject(6)
                 .getJSONObject("defaultProperties").getString("sid"));
     }
 
@@ -3788,6 +3790,681 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
+    public void mobileMetadataCapacityAllows196CallerPropertiesAndFourSdkFields()
+            throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        JSONObject caller = ordinaryEventProperties(196)
+                .put("mobile_contract_version", 99).put("mobile_occurred_at", "caller-time")
+                .put("app_version", "caller-version").put("app_build", "caller-build")
+                .put("mobile_platform", "caller").put("mobile_session_started_at", "caller");
+        op.track("at_capacity", caller);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONObject properties = find(allCapturedData(), "at_capacity")
+                .getJSONObject("eventProperties");
+        assertEquals(200, properties.length());
+        assertOrdinaryEventProperties(properties, 196);
+        assertEquals(1, properties.getInt("mobile_contract_version"));
+        assertEquals("2.5.1", properties.getString("app_version"));
+        assertEquals("42", properties.getString("app_build"));
+        assertTrue(properties.getString("mobile_occurred_at")
+                .matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z"));
+        assertFalse(properties.has("mobile_platform"));
+        assertFalse(properties.has("mobile_session_started_at"));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void mobileMetadataCapacityPreserves197MergedCallerPropertiesAndWarnsPrivately()
+            throws Exception {
+        int previousLogLevel = OPLog.getLevel();
+        OPLog.setLevel(OPLog.WARN);
+        ShadowLog.clear();
+        try {
+            OursPrivacyAPI op = newApi();
+            op.initialize(TOKEN, OursPrivacyInitOptions.builder().trackAutomaticEvents(true)
+                    .defaultEventProperties(ordinaryEventProperties(197)).build());
+            op.onForeground();
+            op.track("over_capacity", jsonOf("field_196", "synthetic-value-196"));
+            op.trackScreen("Schedule");
+            op.identify(OursPrivacyUserProperties.builder()
+                    .externalId("synthetic-patient").build());
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            JSONArray data = allCapturedData();
+            JSONObject item = find(data, "over_capacity");
+            JSONObject properties = item.getJSONObject("eventProperties");
+            assertEquals(197, properties.length());
+            assertOrdinaryEventProperties(properties, 197);
+            assertNoCommonMobileMetadata(properties);
+            assertEquals(4, find(data, "$mobile_first_open")
+                    .getJSONObject("eventProperties").length());
+            assertEquals(5, find(data, "$mobile_screen_view")
+                    .getJSONObject("eventProperties").length());
+            assertEquals(4, find(data, "$identify").getJSONObject("eventProperties").length());
+            boolean warned = false;
+            for (ShadowLog.LogItem log : ShadowLog.getLogs()) {
+                if (log.type != android.util.Log.WARN || !log.msg.contains("metadata")) continue;
+                warned = true;
+                assertFalse(log.msg.contains(item.getString("visitor_id")));
+                assertFalse(log.msg.contains(item.getString("distinct_id")));
+                assertFalse(log.msg.contains(TOKEN));
+                assertFalse(log.msg.contains("field_"));
+                assertFalse(log.msg.contains("synthetic"));
+                assertFalse(log.msg.contains("over_capacity"));
+            }
+            assertTrue("capacity fallback emits a generic SDK warning", warned);
+            assertEquals(0, queuedCount());
+        } finally {
+            OPLog.setLevel(previousLogLevel);
+        }
+    }
+
+    @Test
+    public void mobileMetadataCapacityPreserves200CallerPropertiesAndDrainsFollowingEvent()
+            throws Exception {
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.setFlushBatchSize(1);
+        op.track("full_caller_bag", ordinaryEventProperties(200),
+                OursPrivacyUserProperties.builder().externalId("synthetic-patient").build());
+        String eventId = queuedEvent("full_caller_bag").getString("distinct_id");
+        op.track("following_event", jsonOf("appointment_id", "synthetic"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(2, mNetwork.callCount());
+        JSONObject first = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+        JSONObject properties = first.getJSONObject("eventProperties");
+        assertEquals(200, properties.length());
+        assertOrdinaryEventProperties(properties, 200);
+        assertNoCommonMobileMetadata(properties);
+        assertEquals(eventId, first.getString("distinct_id"));
+        assertEquals("synthetic-patient", first.getJSONObject("userProperties")
+                .getString("external_id"));
+        JSONObject defaults = first.getJSONObject("defaultProperties");
+        assertTrue(defaults.getString("sid").matches("[0-9]{13}"));
+        assertEquals("Android", defaults.getString("os_name"));
+        assertEquals(OursPrivacyAPI.VERSION, defaults.getString("version"));
+        JSONObject next = mNetwork.bodyAt(1).getJSONArray("data").getJSONObject(0);
+        assertEquals("following_event", next.getString("event"));
+        assertEquals(1, next.getJSONObject("eventProperties").getInt("mobile_contract_version"));
+        assertEquals("synthetic", next.getJSONObject("eventProperties").getString("appointment_id"));
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void mobileMetadataCapacityCountsOnlyAvailableSdkFields() throws Exception {
+        for (String appVersion : new String[]{null, "1.0"}) {
+            int count = appVersion == null ? 198 : 197;
+            MobileSession.MobileSnapshot snapshot = new MobileSession.MobileSnapshot(
+                    "1780000000000", 1780000000000L, 1780000000000L, appVersion, null);
+            Track.Context context = new Track.Context("synthetic-visitor",
+                    null, null, null, null, null, snapshot);
+            JSONObject fits = Track.composeTrackEvent("fits", ordinaryEventProperties(count),
+                    null, context).getJSONObject("eventProperties");
+            assertEquals(200, fits.length());
+            assertOrdinaryEventProperties(fits, count);
+            assertEquals(1, fits.getInt("mobile_contract_version"));
+            assertFalse(fits.has("app_build"));
+            assertEquals(appVersion != null, fits.has("app_version"));
+            JSONObject overflow = Track.composeTrackEvent("overflow",
+                    ordinaryEventProperties(count + 1), null, context)
+                    .getJSONObject("eventProperties");
+            assertEquals(count + 1, overflow.length());
+            assertOrdinaryEventProperties(overflow, count + 1);
+            assertNoCommonMobileMetadata(overflow);
+        }
+    }
+
+    @Test
+    public void mobileMetadataCapacityDoesNotTruncateOversizedCallerBags() throws Exception {
+        MobileSession.MobileSnapshot snapshot = new MobileSession.MobileSnapshot(
+                "1780000000000", 1780000000000L, 1780000000000L, "1.0", "7");
+        Track.Context context = new Track.Context("synthetic-visitor",
+                null, null, null, null, null, snapshot);
+        JSONObject fresh = Track.composeTrackEvent("oversized", ordinaryEventProperties(201),
+                null, context).getJSONObject("eventProperties");
+        assertEquals(201, fresh.length());
+        assertOrdinaryEventProperties(fresh, 201);
+        assertNoCommonMobileMetadata(fresh);
+        JSONObject queuedProperties = ordinaryEventProperties(201)
+                .put("mobile_contract_version", 1)
+                .put("mobile_occurred_at", "2026-10-06T12:00:01.123Z")
+                .put("app_version", "1.0").put("app_build", "7");
+        JSONObject migrated = Track.migrateQueuedEvent(new JSONObject()
+                .put("eventProperties", queuedProperties)
+                .put("defaultProperties", jsonOf("sid", "1780000000000")));
+        JSONObject properties = migrated.getJSONObject("eventProperties");
+        assertEquals(205, properties.length());
+        assertOrdinaryEventProperties(properties, 201);
+        assertEquals(1, properties.getInt("mobile_contract_version"));
+    }
+
+    @Test
+    public void mobileMetadataCapacityPreservesAsciiSizeBoundaryAndDrainsFollowingEvent()
+            throws Exception {
+        String value = "x".repeat(1048561);
+        JSONObject caller = jsonOf("payload", value);
+        assertEquals(1048575, caller.toString().length());
+        JSONObject metadata = new JSONObject().put("mobile_contract_version", 1)
+                .put("mobile_occurred_at", "2026-10-06T12:00:01.123Z")
+                .put("app_version", "1.0").put("app_build", "7");
+        JSONObject enriched = new JSONObject(caller.toString());
+        Track.mergeOnto(enriched, metadata);
+        assertTrue("SDK metadata exceeds the serialized size limit",
+                enriched.toString().length() >= 1048576);
+
+        for (String shape : List.of("fresh", "legacy", "current")) {
+            mNetwork.reset();
+            if (!"fresh".equals(shape)) {
+                JSONObject defaults = new JSONObject().put("sid", "1791288000000")
+                        .put("version", "old-sdk").put("os_name", "Android");
+                JSONObject properties = new JSONObject(enriched.toString());
+                if ("legacy".equals(shape)) {
+                    properties = new JSONObject(caller.toString());
+                    Track.mergeOnto(defaults, metadata);
+                    defaults.put("sid", "legacy-uuid")
+                            .put("mobile_session_started_at", "2026-10-06T12:00:00.000Z");
+                }
+                JSONObject item = new JSONObject().put("event", "size_boundary")
+                        .put("visitor_id", "captured-visitor").put("distinct_id", "captured-event")
+                        .put("eventProperties", properties).put("defaultProperties", defaults)
+                        .put("userProperties", jsonOf("external_id", "synthetic-patient"));
+                preferences().edit().putString("event_queue", new JSONArray().put(item).toString())
+                        .commit();
+            }
+            OursPrivacyAPI op = newApi();
+            op.initialize(TOKEN, null);
+            op.setFlushBatchSize(1);
+            if ("fresh".equals(shape)) {
+                op.track("size_boundary", caller, OursPrivacyUserProperties.builder()
+                        .externalId("synthetic-patient").build());
+            }
+            JSONObject stored = queuedEvent("size_boundary");
+            JSONObject storedProperties = stored.getJSONObject("eventProperties");
+            assertEquals(shape, 1048575, storedProperties.toString().length());
+            assertEquals(1, storedProperties.length());
+            assertTrue("caller value is preserved", value.equals(storedProperties.getString("payload")));
+            assertNoCommonMobileMetadata(storedProperties);
+            String eventId = stored.getString("distinct_id");
+            String visitorId = stored.getString("visitor_id");
+            if (!"fresh".equals(shape)) {
+                assertEquals("captured-event", eventId);
+                assertEquals("captured-visitor", visitorId);
+            }
+            op.track("following_event");
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(shape, 2, mNetwork.callCount());
+            JSONObject first = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+            JSONObject properties = first.getJSONObject("eventProperties");
+            assertEquals(1048575, properties.toString().length());
+            assertTrue("uploaded caller value is preserved", value.equals(properties.getString("payload")));
+            assertNoCommonMobileMetadata(properties);
+            assertEquals(eventId, first.getString("distinct_id"));
+            assertEquals(visitorId, first.getString("visitor_id"));
+            assertEquals("synthetic-patient", first.getJSONObject("userProperties")
+                    .getString("external_id"));
+            JSONObject defaults = first.getJSONObject("defaultProperties");
+            assertTrue(defaults.getString("sid").matches("[0-9]{13}"));
+            assertEquals("Android", defaults.getString("os_name"));
+            assertEquals("fresh".equals(shape) ? OursPrivacyAPI.VERSION : "old-sdk",
+                    defaults.getString("version"));
+            JSONObject next = mNetwork.bodyAt(1).getJSONArray("data").getJSONObject(0);
+            assertEquals("following_event", next.getString("event"));
+            assertEquals(1, next.getJSONObject("eventProperties").getInt("mobile_contract_version"));
+            assertEquals(shape, 0, queuedCount());
+            op.shutdownForTests();
+        }
+    }
+
+    @Test
+    public void mobileMetadataCapacityNormalizesLegacyAndCurrentQueued204PropertyEvents()
+            throws Exception {
+        for (String shape : List.of("legacy", "invalid_legacy", "current")) {
+            mNetwork.reset();
+            JSONObject properties = ordinaryEventProperties(200);
+            JSONObject metadata = new JSONObject().put("mobile_contract_version", 1)
+                    .put("mobile_occurred_at", "2026-10-06T12:00:01.123Z")
+                    .put("app_version", "1.0").put("app_build", "7");
+            JSONObject defaults = new JSONObject().put("sid", "1791288000000")
+                    .put("version", "old-sdk").put("os_name", "Android")
+                    .put("device_type", "mobile").put("utm_source", "campaign");
+            if ("current".equals(shape)) {
+                Track.mergeOnto(properties, metadata);
+            } else {
+                Track.mergeOnto(defaults, metadata);
+                defaults.put("sid", "legacy-uuid").put("mobile_platform", "android")
+                        .put("mobile_session_started_at", "legacy".equals(shape)
+                                ? "2026-10-06T12:00:00.000Z" : "invalid");
+            }
+            JSONObject original = new JSONObject().put("event", "queued_full_bag")
+                    .put("visitor_id", "captured-visitor").put("distinct_id", "captured-event")
+                    .put("eventProperties", properties).put("defaultProperties", defaults)
+                    .put("userProperties", new JSONObject().put("external_id", "synthetic-patient")
+                            .put("custom_properties", jsonOf("patient_id", "synthetic"))
+                            .put("consent", jsonOf("analytics", true)));
+            preferences().edit().putString("event_queue", new JSONArray().put(original).toString())
+                    .commit();
+            OursPrivacyAPI op = newApi();
+            op.initialize(TOKEN, null);
+            JSONObject stored = queuedEvent("queued_full_bag").getJSONObject("eventProperties");
+            assertEquals(shape, 200, stored.length());
+            assertOrdinaryEventProperties(stored, 200);
+            assertNoCommonMobileMetadata(stored);
+            op.track("following_event");
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(shape, 2, mNetwork.callCount());
+            JSONObject first = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+            assertEquals("captured-event", first.getString("distinct_id"));
+            assertEquals("captured-visitor", first.getString("visitor_id"));
+            assertOrdinaryEventProperties(first.getJSONObject("eventProperties"), 200);
+            assertNoCommonMobileMetadata(first.getJSONObject("eventProperties"));
+            assertEquals(original.getJSONObject("userProperties").toString(),
+                    first.getJSONObject("userProperties").toString());
+            JSONObject wireDefaults = first.getJSONObject("defaultProperties");
+            assertEquals("old-sdk", wireDefaults.getString("version"));
+            assertEquals("Android", wireDefaults.getString("os_name"));
+            assertEquals("mobile", wireDefaults.getString("device_type"));
+            assertEquals("campaign", wireDefaults.getString("utm_source"));
+            assertNoCommonMobileMetadata(wireDefaults);
+            assertFalse(wireDefaults.has("mobile_platform"));
+            assertFalse(wireDefaults.has("mobile_session_started_at"));
+            if ("invalid_legacy".equals(shape)) {
+                assertFalse(wireDefaults.has("sid"));
+            } else {
+                assertEquals("1791288000000", wireDefaults.getString("sid"));
+            }
+            JSONObject next = mNetwork.bodyAt(1).getJSONArray("data").getJSONObject(0);
+            assertEquals("following_event", next.getString("event"));
+            assertEquals(1, next.getJSONObject("eventProperties").getInt("mobile_contract_version"));
+            assertTrue(next.getJSONObject("defaultProperties").getString("sid")
+                    .matches("[0-9]{13}"));
+            assertEquals(shape, 0, queuedCount());
+            op.shutdownForTests();
+        }
+    }
+
+    @Test
+    public void mobileWireMetadataIsAuthoritativeForCanonicalManualAndIdentifyEvents()
+            throws Exception {
+        FakeClock clock = new FakeClock();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        JSONObject caller = new JSONObject().put("mobile_contract_version", 99)
+                .put("mobile_occurred_at", "caller-time").put("app_version", "caller")
+                .put("app_build", "caller").put("mobile_platform", "caller")
+                .put("mobile_session_started_at", "caller")
+                .put("patient_note", "synthetic-note");
+        op.initialize(TOKEN, OursPrivacyInitOptions.builder().trackAutomaticEvents(true)
+                .defaultEventProperties(caller)
+                .defaultUserCustomProperties(jsonOf("patient_id", "synthetic"))
+                .initialURL("https://example.test/?utm_source=campaign&gclid=synthetic")
+                .build());
+        op.onForeground();
+        op.track("appointment_booked", caller, OursPrivacyUserProperties.builder()
+                .externalId("synthetic-patient").build());
+        op.identify(OursPrivacyUserProperties.builder().externalId("synthetic-patient").build());
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONArray data = allCapturedData();
+        for (String name : List.of("$mobile_first_open", "appointment_booked", "$identify")) {
+            JSONObject item = find(data, name);
+            JSONObject defaults = item.getJSONObject("defaultProperties");
+            JSONObject properties = item.getJSONObject("eventProperties");
+            assertEquals(Long.toString(clock.wall), defaults.getString("sid"));
+            assertTrue(defaults.getString("sid").matches("[0-9]{13}"));
+            assertEquals("Android", defaults.getString("os_name"));
+            assertEquals("mobile", defaults.getString("device_type"));
+            assertEquals(OursPrivacyAPI.VERSION, defaults.getString("version"));
+            for (String key : List.of("mobile_contract_version", "mobile_occurred_at",
+                    "app_version", "app_build", "mobile_platform", "mobile_session_started_at")) {
+                assertFalse(key, defaults.has(key));
+            }
+            assertEquals(1, properties.getInt("mobile_contract_version"));
+            assertEquals(MobileSession.utc(clock.wall), properties.getString("mobile_occurred_at"));
+            assertEquals("2.5.1", properties.getString("app_version"));
+            assertEquals("42", properties.getString("app_build"));
+            assertFalse(properties.has("mobile_platform"));
+            assertFalse(properties.has("mobile_session_started_at"));
+            assertFalse(item.has("time"));
+        }
+        JSONObject canonical = find(data, "$mobile_first_open");
+        assertEquals(4, canonical.getJSONObject("eventProperties").length());
+        assertTrue(canonical.isNull("userProperties"));
+        assertFalse(canonical.toString().contains("patient"));
+        assertFalse(canonical.toString().contains("campaign"));
+        assertFalse(canonical.toString().contains("gclid"));
+        assertEquals("synthetic-note", find(data, "appointment_booked")
+                .getJSONObject("eventProperties").getString("patient_note"));
+        assertEquals("synthetic-patient", find(data, "$identify")
+                .getJSONObject("userProperties").getString("external_id"));
+    }
+
+    @Test
+    public void visitorAndModeCapturedAtEnqueueSurviveRestartAndSplitFlushes() throws Exception {
+        OursPrivacyAPI first = newApi();
+        first.initialize(TOKEN, null);
+        String generated = first.getVisitorId();
+        first.track("generated");
+        first.setVisitorId(generated);
+        first.track("same_visitor_manual");
+        first.setVisitorId("stitched-one");
+        first.track("stitched_one");
+        first.setVisitorId("stitched-two");
+        first.track("stitched_two");
+        first.shutdownForTests();
+        OursPrivacyAPI restarted = newApi();
+        restarted.initialize(TOKEN, null);
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(4, mNetwork.callCount());
+        String[] names = {"generated", "same_visitor_manual", "stitched_one", "stitched_two"};
+        String[] visitors = {generated, generated, "stitched-one", "stitched-two"};
+        for (int i = 0; i < names.length; i++) {
+            JSONObject envelope = mNetwork.bodyAt(i);
+            assertEquals(i != 0, envelope.getBoolean("is_manually_set_id"));
+            JSONArray batch = envelope.getJSONArray("data");
+            assertEquals(1, batch.length());
+            assertEquals(names[i], batch.getJSONObject(0).getString("event"));
+            assertEquals(visitors[i], batch.getJSONObject(0).getString("visitor_id"));
+            assertEquals(6, batch.getJSONObject(0).length());
+        }
+        assertEquals(0, queuedCount());
+    }
+
+    @Test
+    public void legacyQueueUsesCurrentModeWithoutChangingCapturedVisitors() throws Exception {
+        JSONArray queue = new JSONArray();
+        for (String visitor : List.of("legacy-one", "legacy-one", "legacy-two")) {
+            queue.put(new JSONObject().put("event", "legacy").put("visitor_id", visitor)
+                    .put("distinct_id", java.util.UUID.randomUUID().toString()));
+        }
+        preferences().edit().putString("event_queue", queue.toString())
+                .putBoolean("is_manually_set_id", true).commit();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(2, mNetwork.callCount());
+        assertEquals(2, mNetwork.bodyAt(0).getJSONArray("data").length());
+        assertEquals(1, mNetwork.bodyAt(1).getJSONArray("data").length());
+        assertTrue(mNetwork.bodyAt(0).getBoolean("is_manually_set_id"));
+        assertTrue(mNetwork.bodyAt(1).getBoolean("is_manually_set_id"));
+        assertEquals("legacy-two", mNetwork.bodyAt(1).getJSONArray("data")
+                .getJSONObject(0).getString("visitor_id"));
+    }
+
+    @Test
+    public void pendingUuidFactReplayKeepsCapturedModeAndOmitsCallerProperties() throws Exception {
+        FakeClock clock = new FakeClock();
+        String key = "mobile_session_" + java.util.UUID.nameUUIDFromBytes(
+                TOKEN.getBytes(StandardCharsets.UTF_8));
+        JSONObject pending = new JSONObject().put("id", "pending-id")
+                .put("visitor_id", "prior-visitor").put("is_manually_set_id", false)
+                .put("event", "$mobile_screen_view").put("sid", "old-uuid")
+                .put("started_at", clock.wall - 5_000).put("occurred_at", clock.wall - 1_000)
+                .put("app_version", "1.0").put("app_build", "7")
+                .put("event_properties", new JSONObject().put("screen_name", "Schedule")
+                        .put("patient_note", "synthetic").put("utm_source", "caller")
+                        .put("mobile_contract_version", 99));
+        JSONObject state = new JSONObject().put("sid", "old-uuid")
+                .put("started_at", clock.wall - 5_000).put("last_active", clock.wall - 1_000)
+                .put("first_open_accepted", true).put("session_start_emitted", true)
+                .put("pending_facts", new JSONArray().put(pending));
+        preferences().edit().putString(key, state.toString())
+                .putBoolean("is_manually_set_id", true).commit();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONObject envelope = mNetwork.bodyAt(0);
+        assertFalse(envelope.getBoolean("is_manually_set_id"));
+        JSONObject wire = envelope.getJSONArray("data").getJSONObject(0);
+        assertEquals("pending-id", wire.getString("distinct_id"));
+        assertEquals("prior-visitor", wire.getString("visitor_id"));
+        assertEquals(Long.toString(clock.wall - 5_000), wire.getJSONObject("defaultProperties")
+                .getString("sid"));
+        assertEquals("1.0", wire.getJSONObject("eventProperties").getString("app_version"));
+        assertEquals("7", wire.getJSONObject("eventProperties").getString("app_build"));
+        assertEquals(1, wire.getJSONObject("eventProperties").getInt("mobile_contract_version"));
+        assertEquals("Schedule", wire.getJSONObject("eventProperties").getString("screen_name"));
+        assertEquals(5, wire.getJSONObject("eventProperties").length());
+        assertTrue(wire.isNull("userProperties"));
+        assertFalse(wire.toString().contains("synthetic"));
+        assertFalse(wire.toString().contains("caller"));
+    }
+
+    @Test
+    public void failedQueueMigrationCommitRestoresOriginalPayloadForRetry() throws Exception {
+        JSONObject item = new JSONObject().put("event", "appointment_booked")
+                .put("visitor_id", "legacy-visitor").put("distinct_id", "legacy-id")
+                .put("eventProperties", jsonOf("appointment_id", "synthetic"))
+                .put("defaultProperties", new JSONObject().put("sid", "legacy-uuid")
+                        .put("mobile_session_started_at", "2026-10-06T12:00:00.000Z")
+                        .put("mobile_contract_version", 1));
+        String original = new JSONArray().put(item).toString();
+        preferences().edit().putString("event_queue", original).commit();
+        AtomicBoolean fail = new AtomicBoolean(true);
+        PersistentIdentity identity = new PersistentIdentity(
+                CompletableFuture.completedFuture(preferencesWithQueueCommitFailure(fail)));
+        assertThrows(IllegalStateException.class, identity::getQueueSize);
+        assertEquals(original, preferences().getString("event_queue", null));
+        fail.set(false);
+        assertEquals(1, identity.getQueueSize());
+        assertEquals("1791288000000", identity.getQueueSnapshot().getJSONObject(0)
+                .getJSONObject("defaultProperties").getString("sid"));
+        assertEquals("legacy-id", identity.getQueueSnapshot().getJSONObject(0)
+                .getString("distinct_id"));
+    }
+
+    @Test
+    public void malformedLegacySessionDateUploadsWithoutSidAndDrainsFollowingEvent()
+            throws Exception {
+        for (Object timestamp : new Object[]{"2026-02-30T12:00:00.000Z",
+                "2026-10-06T12:00:00.000Ztrailing", "2026-10-06T12:00:00Z",
+                "1970-01-01T00:00:00.000Z", "invalid", JSONObject.NULL, null}) {
+            mNetwork.reset();
+            JSONObject item = new JSONObject().put("event", "appointment_booked")
+                    .put("visitor_id", "legacy-visitor").put("distinct_id", "legacy-id")
+                    .put("eventProperties", new JSONObject().put("appointment_id", "synthetic")
+                            .put("patient_note", "synthetic-note").put("app_version", "caller")
+                            .put("mobile_platform", "caller")
+                            .put("mobile_session_started_at", "caller"))
+                    .put("userProperties", new JSONObject().put("external_id", "synthetic-patient")
+                            .put("custom_properties", jsonOf("patient_id", "synthetic"))
+                            .put("consent", jsonOf("analytics", true)))
+                    .put("defaultProperties", new JSONObject().put("sid", "legacy-uuid")
+                            .put("mobile_session_started_at", timestamp)
+                            .put("mobile_platform", "android").put("mobile_contract_version", 1)
+                            .put("mobile_occurred_at", "2026-10-06T12:00:01.123Z")
+                            .put("app_version", "1.0").put("app_build", "7")
+                            .put("version", "old-sdk").put("os_name", "Android")
+                            .put("device_type", "mobile").put("utm_source", "campaign"));
+            preferences().edit().putString("event_queue", new JSONArray().put(item).toString())
+                    .commit();
+            OursPrivacyAPI op = newApi();
+            op.initialize(TOKEN, null);
+            op.track("following_event");
+            String nextId = queuedEvent("following_event").getString("distinct_id");
+            mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"legacy-visitor\","
+                    + "\"accepted\":1,\"rejected\":[]}");
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(String.valueOf(timestamp), 0, queuedCount());
+            assertEquals(2, mNetwork.callCount());
+            JSONObject old = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+            JSONObject defaults = old.getJSONObject("defaultProperties");
+            JSONObject properties = old.getJSONObject("eventProperties");
+            assertFalse(defaults.has("sid"));
+            assertEquals("legacy-id", old.getString("distinct_id"));
+            assertEquals("legacy-visitor", old.getString("visitor_id"));
+            assertEquals("synthetic", properties.getString("appointment_id"));
+            assertEquals("synthetic-note", properties.getString("patient_note"));
+            assertEquals("synthetic-patient", old.getJSONObject("userProperties")
+                    .getString("external_id"));
+            assertEquals("synthetic", old.getJSONObject("userProperties")
+                    .getJSONObject("custom_properties").getString("patient_id"));
+            assertTrue(old.getJSONObject("userProperties").getJSONObject("consent")
+                    .getBoolean("analytics"));
+            assertEquals("old-sdk", defaults.getString("version"));
+            assertEquals("Android", defaults.getString("os_name"));
+            assertEquals("mobile", defaults.getString("device_type"));
+            assertEquals("campaign", defaults.getString("utm_source"));
+            assertEquals(1, properties.getInt("mobile_contract_version"));
+            assertEquals("2026-10-06T12:00:01.123Z", properties.getString("mobile_occurred_at"));
+            assertEquals("1.0", properties.getString("app_version"));
+            assertEquals("7", properties.getString("app_build"));
+            for (String key : List.of("mobile_session_started_at", "mobile_platform",
+                    "mobile_contract_version", "mobile_occurred_at", "app_version", "app_build")) {
+                assertFalse(key, defaults.has(key));
+            }
+            assertFalse(properties.has("mobile_session_started_at"));
+            assertFalse(properties.has("mobile_platform"));
+            JSONObject next = mNetwork.bodyAt(1).getJSONArray("data").getJSONObject(0);
+            assertEquals(nextId, next.getString("distinct_id"));
+            assertEquals("following_event", next.getString("event"));
+            assertTrue(next.getJSONObject("defaultProperties").getString("sid")
+                    .matches("[0-9]{13}"));
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(2, mNetwork.callCount());
+            op.shutdownForTests();
+        }
+    }
+
+    @Test
+    public void legacyUuidWithoutMobileDefaultsUploadsWithoutInventingMetadata() throws Exception {
+        JSONObject item = new JSONObject().put("event", "appointment_booked")
+                .put("visitor_id", "legacy-visitor").put("distinct_id", "legacy-id")
+                .put("eventProperties", jsonOf("appointment_id", "synthetic"))
+                .put("defaultProperties", new JSONObject().put("sid", "legacy-uuid")
+                        .put("version", "old-sdk"));
+        preferences().edit().putString("event_queue", new JSONArray().put(item).toString()).commit();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        JSONObject old = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+        assertFalse(old.getJSONObject("defaultProperties").has("sid"));
+        assertEquals("old-sdk", old.getJSONObject("defaultProperties").getString("version"));
+        assertEquals("legacy-id", old.getString("distinct_id"));
+        assertEquals("legacy-visitor", old.getString("visitor_id"));
+        assertEquals("synthetic", old.getJSONObject("eventProperties").getString("appointment_id"));
+        assertEquals(1, old.getJSONObject("eventProperties").length());
+    }
+
+    @Test
+    public void queuedCanonicalMigrationDropsCallerBagsAndAttribution() throws Exception {
+        JSONObject item = new JSONObject().put("event", "$mobile_screen_view")
+                .put("visitor_id", "captured-visitor").put("distinct_id", "canonical-id")
+                .put("userProperties", jsonOf("external_id", "synthetic-patient"))
+                .put("eventProperties", new JSONObject().put("screen_name", "Schedule")
+                        .put("patient_note", "synthetic").put("caller_field", "caller"))
+                .put("defaultProperties", new JSONObject().put("sid", "legacy-uuid")
+                        .put("mobile_session_started_at", "2026-10-06T12:00:00.000Z")
+                        .put("mobile_occurred_at", "2026-10-06T12:00:01.000Z")
+                        .put("mobile_contract_version", 1).put("os_name", "Android")
+                        .put("version", "old-sdk").put("utm_source", "campaign")
+                        .put("gclid", "synthetic-click").put("advertising_id", "synthetic"));
+        preferences().edit().putString("event_queue", new JSONArray().put(item).toString()).commit();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONObject wire = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+        assertEquals("canonical-id", wire.getString("distinct_id"));
+        assertEquals("captured-visitor", wire.getString("visitor_id"));
+        assertTrue(wire.isNull("userProperties"));
+        assertEquals("Schedule", wire.getJSONObject("eventProperties").getString("screen_name"));
+        assertEquals(3, wire.getJSONObject("eventProperties").length());
+        assertEquals(3, wire.getJSONObject("defaultProperties").length());
+        assertFalse(wire.toString().contains("synthetic"));
+        assertFalse(wire.toString().contains("campaign"));
+        assertFalse(wire.toString().contains("caller"));
+    }
+
+    @Test
+    public void heldUuidPayloadMigratesWhenReleasedWithoutChangingIdentityMode() throws Exception {
+        String key = "held_tracks_" + java.util.UUID.nameUUIDFromBytes(
+                TOKEN.getBytes(StandardCharsets.UTF_8));
+        JSONObject item = new JSONObject().put("event", "appointment_booked")
+                .put("visitor_id", "held-visitor").put("distinct_id", "held-id")
+                .put("_is_manually_set_id", false)
+                .put("eventProperties", jsonOf("appointment_id", "synthetic"))
+                .put("defaultProperties", new JSONObject().put("sid", "legacy-uuid")
+                        .put("mobile_session_started_at", "2026-10-06T12:00:00.000Z")
+                        .put("mobile_occurred_at", "2026-10-06T12:00:01.000Z")
+                        .put("mobile_contract_version", 1));
+        preferences().edit().putString(key, new JSONArray().put(jsonOf("item", item)).toString())
+                .putBoolean("is_manually_set_id", true).commit();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        JSONObject envelope = mNetwork.bodyAt(0);
+        assertFalse(envelope.getBoolean("is_manually_set_id"));
+        JSONObject wire = envelope.getJSONArray("data").getJSONObject(0);
+        assertEquals("held-id", wire.getString("distinct_id"));
+        assertEquals("held-visitor", wire.getString("visitor_id"));
+        assertEquals("1791288000000", wire.getJSONObject("defaultProperties").getString("sid"));
+        assertEquals("2026-10-06T12:00:01.000Z", wire.getJSONObject("eventProperties")
+                .getString("mobile_occurred_at"));
+        assertFalse(wire.has("_is_manually_set_id"));
+        assertEquals(0, new JSONArray(preferences().getString(key, "[]")).length());
+    }
+
+    @Test
+    public void queuedUuidPayloadMigrationPreservesHealthcareAndCapturedMetadata() throws Exception {
+        JSONObject defaults = new JSONObject().put("sid", "old-session-uuid")
+                .put("mobile_session_started_at", "2026-10-06T12:00:00.000Z")
+                .put("mobile_occurred_at", "2026-10-06T12:00:01.123Z")
+                .put("mobile_platform", "android").put("mobile_contract_version", 1)
+                .put("app_version", "1.0").put("app_build", "7")
+                .put("version", "old-sdk").put("utm_source", "campaign");
+        JSONObject original = new JSONObject().put("event", "appointment_booked")
+                .put("visitor_id", "captured-visitor").put("distinct_id", "captured-event")
+                .put("defaultProperties", defaults)
+                .put("eventProperties", new JSONObject().put("appointment_id", "synthetic")
+                        .put("mobile_contract_version", 99).put("app_version", "caller"))
+                .put("userProperties", jsonOf("external_id", "synthetic-patient"));
+        preferences().edit().putString("event_queue", new JSONArray().put(original).toString())
+                .commit();
+        OursPrivacyAPI op = newApi();
+        op.initialize(TOKEN, null);
+        mNetwork.failWith(new IOException("offline"));
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(1, queuedCount());
+        JSONObject migrated = queuedEvent("appointment_booked");
+        assertEquals("1791288000000", migrated.getJSONObject("defaultProperties").getString("sid"));
+        assertEquals("captured-event", migrated.getString("distinct_id"));
+        assertEquals("captured-visitor", migrated.getString("visitor_id"));
+        assertEquals("synthetic-patient", migrated.getJSONObject("userProperties")
+                .getString("external_id"));
+        assertEquals("synthetic", migrated.getJSONObject("eventProperties").getString("appointment_id"));
+        assertEquals("old-sdk", migrated.getJSONObject("defaultProperties").getString("version"));
+        assertEquals("campaign", migrated.getJSONObject("defaultProperties").getString("utm_source"));
+        assertEquals("1.0", migrated.getJSONObject("eventProperties").getString("app_version"));
+        assertEquals("7", migrated.getJSONObject("eventProperties").getString("app_build"));
+        assertEquals(1, migrated.getJSONObject("eventProperties").getInt("mobile_contract_version"));
+        assertEquals("2026-10-06T12:00:01.123Z", migrated.getJSONObject("eventProperties")
+                .getString("mobile_occurred_at"));
+        assertFalse(migrated.toString().contains("mobile_session_started_at"));
+        assertFalse(migrated.toString().contains("mobile_platform"));
+        op.shutdownForTests();
+        OursPrivacyAPI restarted = newApi();
+        restarted.initialize(TOKEN, null);
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertEquals(0, queuedCount());
+        assertEquals("captured-event", mNetwork.bodyAt(1).getJSONArray("data")
+                .getJSONObject(0).getString("distinct_id"));
+    }
+
+    @Test
     public void mixedIndexedResponseReportsRejectedIdOnceAndLeavesLaterEventQueued()
             throws Exception {
         List<String[]> rejections = new ArrayList<>();
@@ -3898,7 +4575,7 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
-    public void indexedModePersistsAcrossRestartOnlyForItsToken() throws Exception {
+    public void completeLegacySuccessAcknowledgesAfterPersistedIndexedMode() throws Exception {
         OursPrivacyAPI first = newApi();
         first.initialize(TOKEN, null);
         mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
@@ -3915,8 +4592,8 @@ public class OursPrivacyIntegrationTest {
         restarted.track("retry_event");
         restarted.flush();
         assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
-        assertEquals(1, queuedCount());
-        assertEquals("retry_event", queuedEvent("retry_event").getString("event"));
+        assertEquals(0, queuedCount());
+        restarted.track("next_indexed_event");
 
         mNetwork.respondWith("{\"success\":true,\"visitor_id\":\"v\","
                 + "\"accepted\":1,\"rejected\":[]}");
@@ -4005,7 +4682,7 @@ public class OursPrivacyIntegrationTest {
             op.flush();
             assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
             assertEquals(0, queuedCount());
-            assertEquals(3, mNetwork.callCount());
+            assertEquals(4, mNetwork.callCount());
         } finally {
             release.countDown();
         }
@@ -4445,7 +5122,7 @@ public class OursPrivacyIntegrationTest {
         final JSONObject item = envelope.getJSONArray("data").getJSONObject(0);
 
         assertEquals("$identify", item.getString("event"));
-        assertTrue(item.isNull("eventProperties"));
+        assertEquals(4, item.getJSONObject("eventProperties").length());
 
         final JSONObject user = item.getJSONObject("userProperties");
         assertEquals("alex@example.com", user.getString("email"));
@@ -4612,7 +5289,7 @@ public class OursPrivacyIntegrationTest {
     public void defaultEventPropertiesAreMergedIntoEveryTrack() throws Exception {
         final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
-                .defaultEventProperties(jsonOf("app_version", "2.0.0"))
+                .defaultEventProperties(jsonOf("app_channel", "stable"))
                 .build());
 
         op.track("a");
@@ -4621,9 +5298,9 @@ public class OursPrivacyIntegrationTest {
         assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
 
         final JSONArray data = mNetwork.bodyAt(0).getJSONArray("data");
-        assertEquals("2.0.0", data.getJSONObject(0).getJSONObject("eventProperties").getString("app_version"));
+        assertEquals("stable", data.getJSONObject(0).getJSONObject("eventProperties").getString("app_channel"));
         final JSONObject bProps = data.getJSONObject(1).getJSONObject("eventProperties");
-        assertEquals("2.0.0", bProps.getString("app_version"));
+        assertEquals("stable", bProps.getString("app_channel"));
         assertEquals("yes", bProps.getString("custom_event_field"));
     }
 
@@ -4692,8 +5369,29 @@ public class OursPrivacyIntegrationTest {
         assertFalse("visitor_id rotated", visitorBefore.equals(visitorAfter));
 
         final JSONObject item = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
-        // Default event property cleared; eventProperties should be null.
-        assertTrue(item.isNull("eventProperties"));
+        assertEquals(4, item.getJSONObject("eventProperties").length());
+    }
+
+    private static JSONObject ordinaryEventProperties(int count) throws Exception {
+        JSONObject properties = new JSONObject();
+        for (int i = 0; i < count; i++) {
+            properties.put("field_" + i, "synthetic-value-" + i);
+        }
+        return properties;
+    }
+
+    private static void assertOrdinaryEventProperties(JSONObject properties, int count)
+            throws Exception {
+        for (int i = 0; i < count; i++) {
+            assertEquals("synthetic-value-" + i, properties.getString("field_" + i));
+        }
+    }
+
+    private static void assertNoCommonMobileMetadata(JSONObject properties) {
+        for (String key : List.of("mobile_contract_version", "mobile_occurred_at",
+                "app_version", "app_build")) {
+            assertFalse(key, properties.has(key));
+        }
     }
 
     private static JSONObject jsonOf(String key, Object value) {

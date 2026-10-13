@@ -3,11 +3,12 @@
 import argparse
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 UTC_MILLIS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+MOBILE_METADATA = ("mobile_contract_version", "mobile_occurred_at", "app_version", "app_build")
 PRIVATE_KEY = re.compile(
     r"(^|_)(patient|idfa|gaid|idfv|app_set_id|advertising_id|ad_id|url|route|email|phone)(_|$)",
     re.IGNORECASE,
@@ -17,6 +18,13 @@ PRIVATE_KEY = re.compile(
 def utc_millis(value: str) -> datetime:
     assert isinstance(value, str) and UTC_MILLIS.fullmatch(value), f"Invalid UTC timestamp: {value!r}"
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def fits_event_property_budget(properties: dict) -> bool:
+    return len(properties) <= 200 and len(
+        json.dumps(properties, ensure_ascii=False, separators=(",", ":"))
+        .encode("utf-16-le", errors="surrogatepass")
+    ) // 2 < 1048576
 
 
 def assert_no_private_keys(value: object, name: str) -> None:
@@ -41,6 +49,9 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
         assert envelope["token"] == token, file
         assert envelope.get("is_manually_set_id") is True, f"Visitor stitch missing: {file}"
         assert isinstance(envelope["data"], list), file
+        assert len({event["visitor_id"] for event in envelope["data"]}) <= 1, (
+            f"Mixed visitors: {file}"
+        )
         events.extend(envelope["data"])
 
     for event in events:
@@ -50,6 +61,33 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
         assert event["distinct_id"], name
         actual_version = event["defaultProperties"]["version"]
         assert actual_version == version, f"{name} version {actual_version!r} != {version!r}"
+        defaults = event["defaultProperties"]
+        properties = event.get("eventProperties") or {}
+        sid = defaults.get("sid")
+        assert isinstance(sid, str) and re.fullmatch(r"[0-9]{13}", sid), f"{name} has invalid sid"
+        for field in ("mobile_session_started_at", "mobile_platform"):
+            assert field not in defaults and field not in properties, f"{name} sent {field}"
+        for field in MOBILE_METADATA:
+            assert field not in defaults, f"{name} sent {field} in defaults"
+        assert fits_event_property_budget(properties), f"{name} exceeded the event property budget"
+        started = datetime.fromtimestamp(int(sid) / 1000, timezone.utc).replace(tzinfo=None)
+        if (
+            not name.startswith("$mobile_") and name != "$identify"
+            and not any(field in properties for field in MOBILE_METADATA)
+        ):
+            candidate = {
+                **properties, "mobile_contract_version": 1,
+                "mobile_occurred_at": started.isoformat(timespec="milliseconds") + "Z",
+                "app_version": "1.0", "app_build": "1",
+            }
+            if not fits_event_property_budget(candidate):
+                continue
+        assert properties.get("mobile_contract_version") == 1, name
+        assert properties.get("app_version") == "1.0", name
+        assert properties.get("app_build") == "1", name
+        assert utc_millis(properties.get("mobile_occurred_at")) >= started, (
+            f"{name} occurred before its session"
+        )
 
     names = [event["event"] for event in events]
     by_name = {event["event"]: event for event in events}
@@ -97,7 +135,6 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
     assert events[first_link]["visitor_id"] == visitor, "Initial link did not stitch visitor"
     initial_session = by_name["$mobile_session_start"]["defaultProperties"]["sid"]
     assert initial_session, "Missing sid"
-    initial_start = by_name["$mobile_session_start"]["defaultProperties"]["mobile_session_started_at"]
     for name in ("$mobile_first_open", "$mobile_app_open", "$mobile_screen_view", "appointment_booked"):
         event = by_name[name]
         assert event["visitor_id"] == visitor, f"{name} visitor was not stitched before tracking"
@@ -110,14 +147,6 @@ def validate(directory: Path, version: str, token: str = "e2e-token") -> None:
             defaults = event["defaultProperties"]
             assert event["visitor_id"] == visitor, f"{event['event']} visitor was not stitched"
             assert defaults["sid"] == initial_session, f"{event['event']} used another sid"
-            assert defaults["mobile_session_started_at"] == initial_start, event["event"]
-            assert defaults["mobile_platform"] == "android", event["event"]
-            assert defaults["mobile_contract_version"] == 1, event["event"]
-            assert defaults["app_version"] == "1.0", event["event"]
-            assert defaults["app_build"] == "1", event["event"]
-            started = utc_millis(defaults["mobile_session_started_at"])
-            occurred = utc_millis(defaults["mobile_occurred_at"])
-            assert occurred >= started, f"{event['event']} occurred before its session"
         if event["event"] == "$mobile_session_engagement":
             duration = (event.get("eventProperties") or {}).get("engagement_duration_ms")
             assert isinstance(duration, int) and duration > 0, "Nonpositive engagement delta"

@@ -84,27 +84,32 @@ final class MobileSession {
         JSONObject defaultProperties() {
             JSONObject defaults = new JSONObject();
             put(defaults, "sid", sid);
-            put(defaults, "mobile_session_started_at", utc(startedAt));
-            put(defaults, "mobile_occurred_at", utc(occurredAt));
-            put(defaults, "mobile_platform", "android");
-            put(defaults, "mobile_contract_version", 1);
-            if (appVersion != null) put(defaults, "app_version", appVersion);
-            if (appBuild != null) put(defaults, "app_build", appBuild);
             return defaults;
+        }
+
+        JSONObject eventProperties() {
+            JSONObject properties = new JSONObject();
+            put(properties, "mobile_occurred_at", utc(occurredAt));
+            put(properties, "mobile_contract_version", 1);
+            if (appVersion != null) put(properties, "app_version", appVersion);
+            if (appBuild != null) put(properties, "app_build", appBuild);
+            return properties;
         }
     }
 
     static final class MobileFact {
         private final String id;
         private final String visitorId;
+        private final Boolean manuallySetId;
         private final String eventName;
         private final MobileSnapshot snapshot;
         private final JSONObject properties;
 
-        MobileFact(String id, String visitorId, String eventName,
+        MobileFact(String id, String visitorId, Boolean manuallySetId, String eventName,
                    MobileSnapshot snapshot, JSONObject properties) {
             this.id = id;
             this.visitorId = visitorId;
+            this.manuallySetId = manuallySetId;
             this.eventName = eventName;
             this.snapshot = snapshot;
             this.properties = copy(properties);
@@ -134,6 +139,7 @@ final class MobileSession {
             JSONObject value = new JSONObject();
             put(value, "id", id);
             put(value, "visitor_id", visitorId);
+            if (manuallySetId != null) put(value, "is_manually_set_id", manuallySetId);
             put(value, "event", eventName);
             put(value, "sid", snapshot.sid);
             put(value, "started_at", snapshot.startedAt);
@@ -149,6 +155,7 @@ final class MobileSession {
                     value.optLong("started_at"), value.optLong("occurred_at"),
                     value.optString("app_version", null), value.optString("app_build", null));
             return new MobileFact(value.optString("id"), value.optString("visitor_id"),
+                    value.has("is_manually_set_id") ? value.optBoolean("is_manually_set_id") : null,
                     value.optString("event"), snapshot,
                     value.optJSONObject("event_properties"));
         }
@@ -188,6 +195,21 @@ final class MobileSession {
         this.clock = clock;
         this.disabled = identity.getOptOut();
         PersistentIdentity.MobileState state = identity.getMobileState(token);
+        boolean migrated = false;
+        if (state.sid != null && !Long.toString(state.startedAt).equals(state.sid)) {
+            clearSession(state);
+            migrated = true;
+        }
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            JSONObject fact = state.pendingFacts.optJSONObject(i);
+            if (fact == null) continue;
+            String sid = Long.toString(fact.optLong("started_at"));
+            if (!sid.equals(fact.optString("sid"))) {
+                put(fact, "sid", sid);
+                migrated = true;
+            }
+        }
+        if (migrated) identity.saveMobileState(token, state);
         committedState = new CommittedState(state.sid, state.lastActive);
     }
 
@@ -564,7 +586,8 @@ final class MobileSession {
 
     private MobileFact fact(String name, PersistentIdentity.MobileState state, long nowWall,
                             JSONObject properties) {
-        return new MobileFact(UUID.randomUUID().toString(), identity.getVisitorId(), name,
+        return new MobileFact(UUID.randomUUID().toString(), identity.getVisitorId(),
+                identity.isManuallySetId(), name,
                 snapshot(state, nowWall), properties);
     }
 
@@ -601,7 +624,7 @@ final class MobileSession {
     }
 
     private static void startNew(PersistentIdentity.MobileState state, long nowWall) {
-        state.sid = UUID.randomUUID().toString();
+        state.sid = Long.toString(nowWall);
         state.startedAt = nowWall;
         state.lastActive = nowWall;
         state.accumulatedMs = 0;

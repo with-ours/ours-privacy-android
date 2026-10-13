@@ -43,6 +43,7 @@ import java.util.concurrent.Future;
     private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
     private static final String KEY_HELD_TRACKS_PREFIX = "held_tracks_";
     private static final String KEY_INDEXED_INGEST_PREFIX = "indexed_ingest_";
+    static final String QUEUED_MANUAL_ID = "_is_manually_set_id";
 
     private final Future<SharedPreferences> mPrefsLoader;
     private final WallClock mWallClock;
@@ -172,7 +173,7 @@ import java.util.concurrent.Future;
 
     synchronized void enqueueEvent(JSONObject event) {
         ensureLoaded();
-        mEventQueue.put(event);
+        mEventQueue.put(captureIdentityMode(event));
         persistQueue();
     }
 
@@ -198,7 +199,7 @@ import java.util.concurrent.Future;
         final JSONArray next = copyArray(before);
         final JSONObject held = new JSONObject();
         try {
-            held.put("item", new JSONObject(item.toString()));
+            held.put("item", captureIdentityMode(item));
             if (afterFactId != null) held.put("after_fact_id", afterFactId);
         } catch (JSONException e) {
             throw new IllegalArgumentException("Held event is not valid JSON", e);
@@ -227,7 +228,13 @@ import java.util.concurrent.Future;
                 if (fact != null && afterFactId.equals(fact.optString("id"))) return false;
             }
         }
-        final JSONObject item = head.optJSONObject("item");
+        final JSONObject storedItem = head.optJSONObject("item");
+        final JSONObject item;
+        try {
+            item = storedItem == null ? null : Track.migrateQueuedEvent(storedItem);
+        } catch (JSONException e) {
+            throw new IllegalStateException("Held event is not valid JSON", e);
+        }
         if (item == null) throw new IllegalStateException("Held event has no item");
         final JSONArray remaining = new JSONArray();
         for (int i = 1; i < before.length(); i++) remaining.put(before.opt(i));
@@ -254,17 +261,25 @@ import java.util.concurrent.Future;
     static final class QueueSnapshot {
         final JSONArray events;
         final String generation;
+        final boolean legacyManuallySetId;
 
-        QueueSnapshot(JSONArray events, String generation) {
+        QueueSnapshot(JSONArray events, String generation, boolean legacyManuallySetId) {
             this.events = events;
             this.generation = generation;
+            this.legacyManuallySetId = legacyManuallySetId;
+        }
+
+        boolean manuallySetId(JSONObject event) {
+            return event.has(QUEUED_MANUAL_ID)
+                    ? event.optBoolean(QUEUED_MANUAL_ID) : legacyManuallySetId;
         }
     }
 
     synchronized QueueSnapshot getQueueSnapshotForFlush() {
         ensureLoaded();
         try {
-            return new QueueSnapshot(new JSONArray(mEventQueue.toString()), mQueueGeneration);
+            return new QueueSnapshot(new JSONArray(mEventQueue.toString()), mQueueGeneration,
+                    mIsManuallySetId);
         } catch (JSONException e) {
             throw new IllegalStateException("Queued events are not valid JSON", e);
         }
@@ -516,15 +531,15 @@ import java.util.concurrent.Future;
         final String previousState = encodeMobileState(state);
         final String previousQueue = mEventQueue.toString();
         JSONObject defaults = event == null ? null : event.optJSONObject("defaultProperties");
+        JSONObject properties = event == null ? null : event.optJSONObject("eventProperties");
         if (!pending.optString("event").equals(event.optString("event"))
                 || !factId.equals(event.optString("distinct_id"))
                 || !pending.optString("visitor_id").equals(event.optString("visitor_id"))
                 || defaults == null
                 || !pending.optString("sid").equals(defaults.optString("sid"))
-                || !MobileSession.utc(pending.optLong("started_at")).equals(
-                        defaults.optString("mobile_session_started_at"))
+                || properties == null
                 || !MobileSession.utc(pending.optLong("occurred_at")).equals(
-                        defaults.optString("mobile_occurred_at"))) {
+                        properties.optString("mobile_occurred_at"))) {
             throw new IllegalArgumentException("Queued event does not match pending mobile fact");
         }
         JSONArray remaining = new JSONArray();
@@ -539,6 +554,8 @@ import java.util.concurrent.Future;
         final JSONObject eventCopy;
         try {
             eventCopy = new JSONObject(event.toString());
+            eventCopy.put(QUEUED_MANUAL_ID, pending.has("is_manually_set_id")
+                    ? pending.optBoolean("is_manually_set_id") : mIsManuallySetId);
         } catch (JSONException e) {
             throw new IllegalArgumentException("Queued event is not valid JSON", e);
         }
@@ -652,6 +669,22 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = readJsonObject(prefs, KEY_DEFAULT_USER_CONSENT_PROPERTIES);
         mAttributionDefaultProperties = readJsonObject(prefs, KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
         mEventQueue = readJsonArray(prefs, KEY_EVENT_QUEUE);
+        JSONArray migrated = new JSONArray();
+        try {
+            for (int i = 0; i < mEventQueue.length(); i++) {
+                JSONObject event = mEventQueue.optJSONObject(i);
+                migrated.put(event == null ? mEventQueue.opt(i) : Track.migrateQueuedEvent(event));
+            }
+        } catch (JSONException e) {
+            throw new IllegalStateException("Queued events are not valid JSON", e);
+        }
+        if (!migrated.toString().equals(mEventQueue.toString())) {
+            if (!prefs.edit().putString(KEY_EVENT_QUEUE, migrated.toString()).commit()) {
+                prefs.edit().putString(KEY_EVENT_QUEUE, mEventQueue.toString()).commit();
+                throw new IllegalStateException("Failed to migrate queued events");
+            }
+            mEventQueue = migrated;
+        }
         mQueueGeneration = prefs.getString(KEY_EVENT_QUEUE_GENERATION, null);
         if (mQueueGeneration == null) {
             mQueueGeneration = UUID.randomUUID().toString();
@@ -699,6 +732,19 @@ import java.util.concurrent.Future;
             editor.putString(KEY_EVENT_QUEUE, mEventQueue.toString());
             editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             editor.apply();
+        }
+    }
+
+    synchronized JSONObject captureIdentityMode(JSONObject event) {
+        ensureLoaded();
+        try {
+            JSONObject captured = new JSONObject(event.toString());
+            if (!captured.has(QUEUED_MANUAL_ID)) {
+                captured.put(QUEUED_MANUAL_ID, mIsManuallySetId);
+            }
+            return captured;
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Queued event is not valid JSON", e);
         }
     }
 
