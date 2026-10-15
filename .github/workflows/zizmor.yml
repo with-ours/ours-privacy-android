@@ -7,7 +7,6 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/**"
-      - ".github/dependabot.yml"
       - ".github/workflows/zizmor.yml"
 
 permissions: {}
@@ -22,7 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      security-events: write
       contents: read
       actions: read
     steps:
@@ -31,3 +29,6 @@ jobs:
           persist-credentials: false
 
       - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          annotations: true

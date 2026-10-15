@@ -293,17 +293,18 @@ The current source requires Java 17 and Android SDK platform 37. Apps consuming 
 ./gradlew test lint :oursprivacydemo:assembleDebug
 ```
 
-The SDK tests under `src/test/` use Robolectric to verify the ingest envelope without a device. The demo has JVM and instrumented UI tests. Lint uses a baseline in each module.
+The SDK tests under `src/test/` use Robolectric to verify the ingest envelope without a device. Lint uses a baseline in each module.
 
 **Run the demo app:** copy `local.properties.example` to `local.properties` and add your token, then run the `oursprivacydemo` target. The demo uses the local SDK module by default. Its tracking screen asks for a token when none is configured.
 
-**Run E2E locally:** start an API 36 emulator with the Android SDK, then run:
+**Verify unsigned local publication metadata:**
 
 ```sh
-./tools/run-e2e.sh
+./gradlew :oursprivacy-android:publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false -Dmaven.repo.local="$PWD/build/maven-local"
+python3 .github/scripts/verify-publication.py
 ```
 
-The command starts `tools/payload-recorder/server.py`, builds the demo with a test token and `RECORDER_URL`, runs the Compose UI test, and checks the recorded event payloads and SDK version. It needs Java 17, the Android SDK, and Python 3; it needs no Ours Privacy account. The same command runs in CI.
+The generated POM and module metadata are in `oursprivacy-android/build/publications/maven/`; local artifacts remain under `build/maven-local/`.
 
 **Test the published artifact:** `./gradlew :oursprivacydemo:assembleDebug -PusePublished=true -PpublishedSdkVersion=2.0.0` builds against the currently published SDK. Update `publishedSdkVersion` after a new version reaches Maven Central.
 

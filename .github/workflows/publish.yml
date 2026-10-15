@@ -18,16 +18,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Build + test runs without publishing credentials. A malicious transitive
+  # Build, tests, and lint run without publishing credentials. A malicious transitive
   # dep resolved by Gradle here cannot exfiltrate Sonatype or GPG secrets.
   build:
-    name: Build & Test
+    name: Build, Test & Lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >
-      (github.event_name == 'workflow_dispatch') ||
-      (github.event.pull_request.merged == true &&
-       startsWith(github.event.pull_request.title, 'release:'))
+      github.event.repository.private == false &&
+      ((github.event_name == 'workflow_dispatch') ||
+       (github.event.pull_request.merged == true &&
+        startsWith(github.event.pull_request.title, 'release:')))
     permissions:
       contents: read
     outputs:
@@ -75,7 +76,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
-      - run: ./gradlew test :oursprivacydemo:assembleDebug :oursprivacy-android:assembleRelease
+      - run: ./gradlew test lint :oursprivacydemo:assembleDebug :oursprivacy-android:assembleRelease
 
   publish:
     name: Publish to Maven Central
