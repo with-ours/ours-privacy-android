@@ -9,8 +9,16 @@ class DemoApplication : Application() {
             null
         } else {
             OursPrivacyAPI(this).also {
-                it.initialize(BuildConfig.OURSPRIVACY_TOKEN, demoInitOptions(BuildConfig.RECORDER_URL))
+                it.initialize(
+                    BuildConfig.OURSPRIVACY_TOKEN,
+                    demoInitOptions(BuildConfig.RECORDER_URL, BuildConfig.OURSPRIVACY_TOKEN)
+                )
             }
         }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        sdk
     }
 }

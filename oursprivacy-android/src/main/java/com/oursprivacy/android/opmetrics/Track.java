@@ -1,5 +1,7 @@
 package com.oursprivacy.android.opmetrics;
 
+import com.oursprivacy.android.util.OPLog;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -23,56 +25,81 @@ final class Track {
         final JSONObject defaultUserConsentProperties;
         final JSONObject attributionDefaultProperties;
         final JSONObject baseDefaultProperties;
+        final MobileSession.MobileSnapshot mobileSnapshot;
 
         Context(String visitorId,
                 JSONObject defaultEventProperties,
                 JSONObject defaultUserCustomProperties,
                 JSONObject defaultUserConsentProperties,
                 JSONObject attributionDefaultProperties,
-                JSONObject baseDefaultProperties) {
+                JSONObject baseDefaultProperties,
+                MobileSession.MobileSnapshot mobileSnapshot) {
             this.visitorId = visitorId;
             this.defaultEventProperties = defaultEventProperties != null ? defaultEventProperties : new JSONObject();
             this.defaultUserCustomProperties = defaultUserCustomProperties != null ? defaultUserCustomProperties : new JSONObject();
             this.defaultUserConsentProperties = defaultUserConsentProperties != null ? defaultUserConsentProperties : new JSONObject();
             this.attributionDefaultProperties = attributionDefaultProperties != null ? attributionDefaultProperties : new JSONObject();
             this.baseDefaultProperties = baseDefaultProperties != null ? baseDefaultProperties : new JSONObject();
+            this.mobileSnapshot = mobileSnapshot;
         }
     }
 
-    /**
-     * Builds the inner data[] element for a {@code track()} call.
-     *
-     * {@code eventProperties} is {@code {...defaultEventProperties, ...callerEventProperties}}
-     * (per-call wins). {@code userProperties} runs through {@link #mergeUserProperties} —
-     * default custom/consent bags merge with per-call, with the empty-consent omission rule.
-     * {@code defaultProperties} is the OS/device snapshot overlaid with the attribution bag.
-     */
+    /** Fixed-ID mobile facts use captured facts and SDK metadata only. */
     static JSONObject composeTrackEvent(String eventName,
                                         JSONObject eventProperties,
                                         JSONObject userProperties,
                                         Context ctx) throws JSONException {
-        final JSONObject mergedEvent = mergeOnto(new JSONObject(), ctx.defaultEventProperties);
+        return composeTrackEvent(eventName, eventProperties, userProperties, ctx, null);
+    }
+
+    static JSONObject composeTrackEvent(String eventName,
+                                        JSONObject eventProperties,
+                                        JSONObject userProperties,
+                                        Context ctx,
+                                        String fixedDistinctId) throws JSONException {
+        JSONObject mergedEvent = new JSONObject();
+        if (fixedDistinctId == null) mergeOnto(mergedEvent, ctx.defaultEventProperties);
         if (eventProperties != null) {
             mergeOnto(mergedEvent, eventProperties);
+        }
+        if (fixedDistinctId != null) {
+            mergedEvent = retainKeys(mergedEvent, CANONICAL_EVENT_PROPERTIES);
         }
 
         // $distinct_id override lets callers pin a per-event distinct_id (replay stitching).
         final String distinctId;
         final Object override = mergedEvent.opt("$distinct_id");
-        if (override instanceof String && !((String) override).isEmpty()) {
+        if (fixedDistinctId != null) {
+            distinctId = fixedDistinctId;
+            mergedEvent.remove("$distinct_id");
+        } else if (override instanceof String && !((String) override).isEmpty()) {
             distinctId = (String) override;
             mergedEvent.remove("$distinct_id");
         } else {
             distinctId = UUID.randomUUID().toString();
         }
 
-        final JSONObject mergedUser = mergeUserProperties(
-                userProperties,
-                ctx.defaultUserCustomProperties,
-                ctx.defaultUserConsentProperties);
+        final JSONObject mergedUser = fixedDistinctId == null
+                ? mergeUserProperties(userProperties, ctx.defaultUserCustomProperties,
+                        ctx.defaultUserConsentProperties)
+                : null;
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
-        mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (fixedDistinctId == null) mergeOnto(defaults, ctx.attributionDefaultProperties);
+        if (ctx.mobileSnapshot != null) {
+            clearMobileMetadata(defaults);
+            clearSessionMetadata(mergedEvent);
+            if (ctx.mobileSnapshot.eventProperties().has("app_version")) mergedEvent.remove("app_version");
+            if (ctx.mobileSnapshot.eventProperties().has("app_build")) mergedEvent.remove("app_build");
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+            JSONObject metadata = ctx.mobileSnapshot.eventProperties();
+            JSONObject candidate = mergeOnto(shallowCopy(mergedEvent), metadata);
+            if (fitsEventPropertyBudget(candidate)) {
+                mergedEvent = candidate;
+            } else {
+                warnMobileMetadataOmitted();
+            }
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", eventName == null ? "op_event" : eventName);
@@ -84,11 +111,7 @@ final class Track {
         return item;
     }
 
-    /**
-     * Builds the inner data[] element for an {@code identify()} call. Event name
-     * is {@code "$identify"}, {@code eventProperties} is null, {@code userProperties}
-     * carries the merged visitor profile (same empty-consent omission rule applies).
-     */
+    /** Identify carries SDK event metadata and the merged visitor profile. */
     static JSONObject composeIdentifyEvent(JSONObject userProperties, Context ctx) throws JSONException {
         final JSONObject mergedUser = mergeUserProperties(
                 userProperties,
@@ -97,16 +120,125 @@ final class Track {
 
         final JSONObject defaults = mergeOnto(new JSONObject(), ctx.baseDefaultProperties);
         mergeOnto(defaults, ctx.attributionDefaultProperties);
+        final JSONObject eventProperties = new JSONObject();
+        if (ctx.mobileSnapshot != null) {
+            clearMobileMetadata(defaults);
+            mergeOnto(defaults, ctx.mobileSnapshot.defaultProperties());
+            mergeOnto(eventProperties, ctx.mobileSnapshot.eventProperties());
+        }
 
         final JSONObject item = new JSONObject();
         item.put("event", "$identify");
         item.put("visitor_id", ctx.visitorId);
         item.put("distinct_id", UUID.randomUUID().toString());
-        item.put("eventProperties", JSONObject.NULL);
+        item.put("eventProperties", eventProperties.length() == 0 ? JSONObject.NULL : eventProperties);
         item.put("userProperties", mergedUser == null ? JSONObject.NULL : mergedUser);
         item.put("defaultProperties", defaults);
         return item;
     }
+
+    private static void clearSessionMetadata(JSONObject properties) {
+        properties.remove("mobile_occurred_at");
+        properties.remove("mobile_contract_version");
+        properties.remove("mobile_session_started_at");
+        properties.remove("mobile_platform");
+    }
+
+    private static void clearMobileMetadata(JSONObject properties) {
+        for (String key : MOBILE_METADATA) properties.remove(key);
+        properties.remove("mobile_session_started_at");
+        properties.remove("mobile_platform");
+    }
+
+    static JSONObject migrateQueuedEvent(JSONObject event) throws JSONException {
+        JSONObject migrated = new JSONObject(event.toString());
+        JSONObject defaults = migrated.optJSONObject("defaultProperties");
+        if (defaults == null) return normalizeQueuedPropertyCapacity(migrated);
+        String sid = defaults.optString("sid");
+        boolean legacyMetadata = defaults.has("mobile_session_started_at")
+                || defaults.has("mobile_platform");
+        for (String key : MOBILE_METADATA) legacyMetadata |= defaults.has(key);
+        if (!legacyMetadata && (!defaults.has("sid") || MobileSession.validSessionId(sid))) {
+            return normalizeQueuedPropertyCapacity(migrated);
+        }
+        if (!MobileSession.validSessionId(sid)) {
+            String startedAt = defaults.optString("mobile_session_started_at");
+            java.text.SimpleDateFormat format = new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US);
+            format.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            format.setLenient(false);
+            java.text.ParsePosition position = new java.text.ParsePosition(0);
+            java.util.Date parsed = format.parse(startedAt, position);
+            if (parsed == null || position.getIndex() != startedAt.length()
+                    || !MobileSession.utc(parsed.getTime()).equals(startedAt)
+                    || !MobileSession.validSessionId(Long.toString(parsed.getTime()))) {
+                defaults.remove("sid");
+            } else {
+                defaults.put("sid", Long.toString(parsed.getTime()));
+            }
+        }
+        if (!legacyMetadata) return normalizeQueuedPropertyCapacity(migrated);
+        JSONObject properties = migrated.optJSONObject("eventProperties");
+        if (properties == null) properties = new JSONObject();
+        clearMobileMetadata(properties);
+        for (String key : MOBILE_METADATA) {
+            if (defaults.has(key)) properties.put(key, defaults.opt(key));
+        }
+        clearMobileMetadata(defaults);
+        migrated.put("eventProperties", properties);
+        if (migrated.optString("event").startsWith("$mobile_")) {
+            migrated.put("userProperties", JSONObject.NULL);
+            migrated.put("defaultProperties", retainKeys(defaults, SDK_DEFAULT_PROPERTIES));
+            migrated.put("eventProperties", retainKeys(properties, CANONICAL_EVENT_PROPERTIES));
+        }
+        return normalizeQueuedPropertyCapacity(migrated);
+    }
+
+    private static JSONObject normalizeQueuedPropertyCapacity(JSONObject event)
+            throws JSONException {
+        JSONObject properties = event.optJSONObject("eventProperties");
+        if (properties == null || fitsEventPropertyBudget(properties)
+                || !properties.has("mobile_contract_version")) return event;
+        JSONObject ordinary = shallowCopy(properties);
+        for (String key : MOBILE_METADATA) ordinary.remove(key);
+        if (fitsEventPropertyBudget(ordinary)) {
+            event.put("eventProperties", ordinary);
+            warnMobileMetadataOmitted();
+        }
+        return event;
+    }
+
+    private static void warnMobileMetadataOmitted() {
+        OPLog.w("OursPrivacy.Track",
+                "Mobile metadata omitted because event properties would exceed the ingest limits");
+    }
+
+    private static boolean fitsEventPropertyBudget(JSONObject properties) {
+        return properties.length() <= MAX_EVENT_PROPERTIES
+                && properties.toString().length() < MAX_EVENT_PROPERTIES_JSON_LENGTH;
+    }
+
+    private static JSONObject retainKeys(JSONObject source, String... keys) throws JSONException {
+        JSONObject result = new JSONObject();
+        for (String key : keys) {
+            if (source.has(key)) result.put(key, source.opt(key));
+        }
+        return result;
+    }
+
+    private static final int MAX_EVENT_PROPERTIES = 200;
+    private static final int MAX_EVENT_PROPERTIES_JSON_LENGTH = 1024 * 1024;
+    private static final String[] MOBILE_METADATA = {
+            "mobile_contract_version", "mobile_occurred_at", "app_version", "app_build"
+    };
+    private static final String[] CANONICAL_EVENT_PROPERTIES = {
+            "mobile_contract_version", "mobile_occurred_at", "app_version", "app_build",
+            "screen_name", "engagement_duration_ms", "previous_app_version", "previous_app_build"
+    };
+    private static final String[] SDK_DEFAULT_PROPERTIES = {
+            "sid", "version", "device_type", "device_vendor", "device_model",
+            "os_name", "os_version", "screen_width", "screen_height"
+    };
 
     /**
      * Merges per-call user properties with the store-level default custom and
@@ -129,9 +261,11 @@ final class Track {
         final boolean havePerCall = perCall != null && perCall.length() > 0;
 
         if (!haveDefaultCustom && !haveDefaultConsent) {
-            // Fast path — no store-level defaults. Pass per-call through unchanged.
             if (!havePerCall) return null;
-            return shallowCopy(perCall);
+            final JSONObject copied = shallowCopy(perCall);
+            final JSONObject consent = copied.optJSONObject("consent");
+            if (consent != null && consent.length() == 0) copied.remove("consent");
+            return copied.length() == 0 ? null : copied;
         }
 
         if (!havePerCall && !haveDefaultCustom && !haveDefaultConsent) {

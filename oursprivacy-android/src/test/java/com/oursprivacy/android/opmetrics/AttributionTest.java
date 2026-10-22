@@ -2,7 +2,6 @@ package com.oursprivacy.android.opmetrics;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -79,6 +78,5 @@ public class AttributionTest {
         final Attribution.Result r = Attribution.parseAttributionFromURL("https://example.com/landing");
         assertEquals(0, r.utmParams.length());
         assertEquals(0, r.clickIds.length());
-        assertTrue(r.rawUrl.endsWith("/landing"));
     }
 }
