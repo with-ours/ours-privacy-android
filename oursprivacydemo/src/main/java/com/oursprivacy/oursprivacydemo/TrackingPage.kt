@@ -63,6 +63,21 @@ fun TrackingPage(navController: NavHostController, op: OursPrivacyAPI?) {
                 "https://example.com/landing?utm_source=demo&utm_medium=android&gclid=demoGclid"
             )
             op.flush()
+        }),
+        Triple("Stitch visitor link", "Applies a synthetic visitor link.", {
+            op.trackDeepLink(demoVisitorLink(BuildConfig.OURSPRIVACY_TOKEN))
+            op.flush()
+        }),
+        Triple("Track Schedule", "Tracks the stable Schedule screen.", {
+            op.trackScreen("Schedule")
+            op.flush()
+        }),
+        Triple("Book appointment", "Tracks a synthetic appointment booking.", {
+            op.track(
+                "appointment_booked",
+                JSONObject(mapOf("appointment_id" to "${BuildConfig.OURSPRIVACY_TOKEN}-appointment"))
+            )
+            op.flush()
         })
     )
 

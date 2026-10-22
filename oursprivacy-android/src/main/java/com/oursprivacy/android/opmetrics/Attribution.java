@@ -65,13 +65,11 @@ final class Attribution {
     private static final String OURS_VISITOR_ID_KEY = "ours_visitor_id";
 
     static final class Result {
-        final String rawUrl;
         final JSONObject utmParams;
         final JSONObject clickIds;
         final String oursVisitorId;
 
-        Result(String rawUrl, JSONObject utmParams, JSONObject clickIds, String oursVisitorId) {
-            this.rawUrl = rawUrl;
+        Result(JSONObject utmParams, JSONObject clickIds, String oursVisitorId) {
             this.utmParams = utmParams;
             this.clickIds = clickIds;
             this.oursVisitorId = oursVisitorId;
@@ -88,15 +86,15 @@ final class Attribution {
         String oursVisitorId = null;
 
         if (url == null || url.isEmpty()) {
-            return new Result(url, utm, clickIds, null);
+            return new Result(utm, clickIds, null);
         }
 
         final Uri uri;
         try {
             uri = Uri.parse(url);
         } catch (Exception e) {
-            OPLog.w(LOGTAG, "Failed to parse deep-link URL: " + url, e);
-            return new Result(url, utm, clickIds, null);
+            OPLog.w(LOGTAG, "Failed to parse deep-link URL");
+            return new Result(utm, clickIds, null);
         }
 
         final Set<String> names;
@@ -104,7 +102,7 @@ final class Attribution {
             names = uri.getQueryParameterNames();
         } catch (UnsupportedOperationException e) {
             // Opaque (non-hierarchical) URI; no query to parse.
-            return new Result(url, utm, clickIds, null);
+            return new Result(utm, clickIds, null);
         }
 
         for (String name : names) {
@@ -125,7 +123,7 @@ final class Attribution {
             }
         }
 
-        return new Result(url, utm, clickIds, oursVisitorId);
+        return new Result(utm, clickIds, oursVisitorId);
     }
 
     private Attribution() {}

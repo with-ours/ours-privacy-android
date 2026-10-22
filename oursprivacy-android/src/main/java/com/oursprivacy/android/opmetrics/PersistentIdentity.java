@@ -9,6 +9,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -22,8 +25,11 @@ import java.util.concurrent.Future;
  *   <li>In-memory event queue, snapshotted to a single SharedPreferences JSON blob on each mutation
  * </ul>
  */
-@SuppressLint("CommitPrefEdits")
+@SuppressLint({"CommitPrefEdits", "ApplySharedPref"})
 /* package */ final class PersistentIdentity {
+    interface WallClock {
+        long wallMillis();
+    }
 
     private static final String KEY_VISITOR_ID = "visitor_id";
     private static final String KEY_IS_MANUALLY_SET_ID = "is_manually_set_id";
@@ -33,13 +39,19 @@ import java.util.concurrent.Future;
     private static final String KEY_DEFAULT_USER_CONSENT_PROPERTIES = "default_user_consent_properties";
     private static final String KEY_ATTRIBUTION_DEFAULT_PROPERTIES = "attribution_default_properties";
     private static final String KEY_EVENT_QUEUE = "event_queue";
+    private static final String KEY_EVENT_QUEUE_GENERATION = "event_queue_generation";
+    private static final String KEY_MOBILE_SESSION_PREFIX = "mobile_session_";
+    private static final String KEY_HELD_TRACKS_PREFIX = "held_tracks_";
+    private static final String KEY_INDEXED_INGEST_PREFIX = "indexed_ingest_";
+    static final String QUEUED_MANUAL_ID = "_is_manually_set_id";
 
     private final Future<SharedPreferences> mPrefsLoader;
+    private final WallClock mWallClock;
 
     private boolean mLoaded = false;
     private String mVisitorId;
     private boolean mIsManuallySetId;
-    private Boolean mOptOut;
+    private volatile Boolean mOptOut;
 
     private JSONObject mDefaultEventProperties = new JSONObject();
     private JSONObject mDefaultUserCustomProperties = new JSONObject();
@@ -47,9 +59,18 @@ import java.util.concurrent.Future;
     private JSONObject mAttributionDefaultProperties = new JSONObject();
 
     private JSONArray mEventQueue = new JSONArray();
+    private String mQueueGeneration = UUID.randomUUID().toString();
+    private boolean mExistingInstall;
+    private String mLegacyAppBuild;
+    private final Map<String, String> mCommittedMobileStates = new HashMap<>();
 
     PersistentIdentity(Future<SharedPreferences> prefsLoader) {
+        this(prefsLoader, System::currentTimeMillis);
+    }
+
+    PersistentIdentity(Future<SharedPreferences> prefsLoader, WallClock wallClock) {
         mPrefsLoader = prefsLoader;
+        mWallClock = wallClock;
     }
 
     // ---------- visitor_id ----------
@@ -78,7 +99,7 @@ import java.util.concurrent.Future;
 
     // ---------- opt-out ----------
 
-    synchronized boolean getOptOut() {
+    boolean getOptOut() {
         ensureLoaded();
         return mOptOut != null && mOptOut;
     }
@@ -96,6 +117,11 @@ import java.util.concurrent.Future;
             editor.putBoolean(KEY_OPT_OUT, optOut);
             editor.apply();
         }
+    }
+
+    void revokeConsentInMemory() {
+        ensureLoaded();
+        mOptOut = true;
     }
 
     // ---------- default-property bags ----------
@@ -149,8 +175,83 @@ import java.util.concurrent.Future;
 
     synchronized void enqueueEvent(JSONObject event) {
         ensureLoaded();
-        mEventQueue.put(event);
+        mEventQueue.put(captureIdentityMode(event));
         persistQueue();
+    }
+
+    synchronized String latestPendingMobileFactId(String token) {
+        MobileState state = getMobileState(token);
+        JSONObject last = state.pendingFacts.optJSONObject(state.pendingFacts.length() - 1);
+        return last == null ? null : last.optString("id");
+    }
+
+    synchronized boolean hasHeldTracks(String token) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        return readJsonArray(prefs, heldTracksKey(token)).length() > 0;
+    }
+
+    synchronized void holdTrack(String token, JSONObject item, String afterFactId) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        final String key = heldTracksKey(token);
+        final JSONArray before = readJsonArray(prefs, key);
+        final JSONArray next = copyArray(before);
+        final JSONObject held = new JSONObject();
+        try {
+            held.put("item", captureIdentityMode(item));
+            if (afterFactId != null) held.put("after_fact_id", afterFactId);
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Held event is not valid JSON", e);
+        }
+        next.put(held);
+        if (!prefs.edit().putString(key, next.toString()).commit()) {
+            prefs.edit().putString(key, before.toString()).commit();
+            throw new IllegalStateException("Failed to persist held event");
+        }
+    }
+
+    synchronized boolean moveReadyHeldTrack(String token) {
+        ensureLoaded();
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) throw new IllegalStateException("SharedPreferences unavailable");
+        final String key = heldTracksKey(token);
+        final JSONArray before = readJsonArray(prefs, key);
+        if (before.length() == 0) return false;
+        final JSONObject head = before.optJSONObject(0);
+        if (head == null) throw new IllegalStateException("Held event is not valid JSON");
+        final String afterFactId = head.optString("after_fact_id", null);
+        if (afterFactId != null) {
+            MobileState state = getMobileState(token);
+            for (int i = 0; i < state.pendingFacts.length(); i++) {
+                JSONObject fact = state.pendingFacts.optJSONObject(i);
+                if (fact != null && afterFactId.equals(fact.optString("id"))) return false;
+            }
+        }
+        final JSONObject storedItem = head.optJSONObject("item");
+        final JSONObject item;
+        try {
+            item = storedItem == null ? null : Track.migrateQueuedEvent(storedItem);
+        } catch (JSONException e) {
+            throw new IllegalStateException("Held event is not valid JSON", e);
+        }
+        if (item == null) throw new IllegalStateException("Held event has no item");
+        final JSONArray remaining = new JSONArray();
+        for (int i = 1; i < before.length(); i++) remaining.put(before.opt(i));
+        final JSONArray nextQueue = copyArray(mEventQueue);
+        nextQueue.put(item);
+        if (!prefs.edit().putString(key, remaining.toString())
+                .putString(KEY_EVENT_QUEUE, nextQueue.toString())
+                .putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).commit()) {
+            prefs.edit().putString(key, before.toString())
+                    .putString(KEY_EVENT_QUEUE, mEventQueue.toString())
+                    .putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).commit();
+            throw new IllegalStateException("Failed to queue held event");
+        }
+        mEventQueue = nextQueue;
+        return true;
     }
 
     /** Returns a snapshot of the current queue. The persisted copy is not mutated. */
@@ -159,20 +260,100 @@ import java.util.concurrent.Future;
         return copyArray(mEventQueue);
     }
 
-    /** Drops the first {@code count} items from the queue (used post-flush). */
-    synchronized void dropFromQueue(int count) {
-        ensureLoaded();
-        if (count <= 0) return;
-        if (count >= mEventQueue.length()) {
-            mEventQueue = new JSONArray();
-        } else {
-            final JSONArray next = new JSONArray();
-            for (int i = count; i < mEventQueue.length(); i++) {
-                next.put(mEventQueue.opt(i));
-            }
-            mEventQueue = next;
+    static final class QueueSnapshot {
+        final JSONArray events;
+        final String generation;
+        final boolean legacyManuallySetId;
+
+        QueueSnapshot(JSONArray events, String generation, boolean legacyManuallySetId) {
+            this.events = events;
+            this.generation = generation;
+            this.legacyManuallySetId = legacyManuallySetId;
         }
-        persistQueue();
+
+        boolean manuallySetId(JSONObject event) {
+            return event.has(QUEUED_MANUAL_ID)
+                    ? event.optBoolean(QUEUED_MANUAL_ID) : legacyManuallySetId;
+        }
+    }
+
+    synchronized QueueSnapshot getQueueSnapshotForFlush() {
+        ensureLoaded();
+        try {
+            return new QueueSnapshot(new JSONArray(mEventQueue.toString()), mQueueGeneration,
+                    mIsManuallySetId);
+        } catch (JSONException e) {
+            throw new IllegalStateException("Queued events are not valid JSON", e);
+        }
+    }
+
+    synchronized boolean canUpload(String generation) {
+        ensureLoaded();
+        return !getOptOut() && generation.equals(mQueueGeneration);
+    }
+
+    synchronized String queueGeneration() {
+        ensureLoaded();
+        return mQueueGeneration;
+    }
+
+    synchronized void enqueueIfAllowed(JSONObject event, String generation) {
+        if (canUpload(generation)) enqueueEvent(event);
+    }
+
+    synchronized boolean hasIndexedIngestMode(String token) {
+        ensureLoaded();
+        SharedPreferences prefs = preferences();
+        return prefs != null && prefs.getBoolean(indexedIngestKey(token), false);
+    }
+
+    synchronized boolean acknowledgeBatch(String token, QueueSnapshot sent,
+                                          int count, boolean indexed) {
+        ensureLoaded();
+        if (getOptOut() || count <= 0 || count > mEventQueue.length()
+                || count > sent.events.length()
+                || !sent.generation.equals(mQueueGeneration)) return false;
+        final SharedPreferences prefs = preferences();
+        if (prefs == null) return false;
+        if (!sent.generation.equals(prefs.getString(KEY_EVENT_QUEUE_GENERATION, null))
+                || !matchesHead(mEventQueue, sent.events, count)
+                || !matchesHead(readJsonArray(prefs, KEY_EVENT_QUEUE), sent.events, count)) {
+            return false;
+        }
+        final String indexedKey = indexedIngestKey(token);
+        final String previousQueue = mEventQueue.toString();
+        final boolean wasIndexed = prefs.getBoolean(indexedKey, false);
+        final String nextGeneration = UUID.randomUUID().toString();
+        final JSONArray next = new JSONArray();
+        for (int i = count; i < mEventQueue.length(); i++) {
+            next.put(mEventQueue.opt(i));
+        }
+        final SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(KEY_EVENT_QUEUE, next.toString());
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, nextGeneration);
+        if (indexed) editor.putBoolean(indexedKey, true);
+        if (!editor.commit()) {
+            final SharedPreferences.Editor rollback = prefs.edit();
+            rollback.putString(KEY_EVENT_QUEUE, previousQueue);
+            rollback.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+            if (wasIndexed) rollback.putBoolean(indexedKey, true);
+            else rollback.remove(indexedKey);
+            rollback.commit();
+            return false;
+        }
+        mEventQueue = next;
+        mQueueGeneration = nextGeneration;
+        return true;
+    }
+
+    private static boolean matchesHead(JSONArray current, JSONArray sent, int count) {
+        if (current.length() < count || sent.length() < count) return false;
+        for (int i = 0; i < count; i++) {
+            if (!String.valueOf(current.opt(i)).equals(String.valueOf(sent.opt(i)))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     synchronized int getQueueSize() {
@@ -183,6 +364,7 @@ import java.util.concurrent.Future;
     synchronized void clearQueue() {
         ensureLoaded();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         persistQueue();
     }
 
@@ -190,6 +372,45 @@ import java.util.concurrent.Future;
 
     /** Wipes everything except the opt-out flag; regenerates a fresh visitor_id. */
     synchronized void reset() {
+        resetKeepingMobileSession(null);
+    }
+
+    synchronized void resetPreservingMobileSession(String token) {
+        resetPreservingMobileSession(token, UUID.randomUUID().toString());
+    }
+
+    synchronized void resetPreservingMobileSession(String token, String visitorId) {
+        ensureLoaded();
+        SharedPreferences.Editor editor = editor();
+        if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
+        editor.putString(KEY_VISITOR_ID, visitorId);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        if (!editor.commit()) {
+            SharedPreferences.Editor rollback = editor();
+            if (rollback != null) {
+                rollback.putString(KEY_VISITOR_ID, mVisitorId)
+                        .putBoolean(KEY_IS_MANUALLY_SET_ID, mIsManuallySetId)
+                        .putString(KEY_DEFAULT_EVENT_PROPERTIES, mDefaultEventProperties.toString())
+                        .putString(KEY_DEFAULT_USER_CUSTOM_PROPERTIES, mDefaultUserCustomProperties.toString())
+                        .putString(KEY_DEFAULT_USER_CONSENT_PROPERTIES, mDefaultUserConsentProperties.toString())
+                        .putString(KEY_ATTRIBUTION_DEFAULT_PROPERTIES, mAttributionDefaultProperties.toString())
+                        .commit();
+            }
+            throw new IllegalStateException("Failed to persist reset");
+        }
+        mVisitorId = visitorId;
+        mIsManuallySetId = false;
+        mDefaultEventProperties = new JSONObject();
+        mDefaultUserCustomProperties = new JSONObject();
+        mDefaultUserConsentProperties = new JSONObject();
+        mAttributionDefaultProperties = new JSONObject();
+    }
+
+    private void resetKeepingMobileSession(String retainedKey) {
         ensureLoaded();
         mVisitorId = UUID.randomUUID().toString();
         mIsManuallySetId = false;
@@ -198,17 +419,28 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = new JSONObject();
         mAttributionDefaultProperties = new JSONObject();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         final SharedPreferences.Editor editor = editor();
-        if (editor != null) {
-            editor.putString(KEY_VISITOR_ID, mVisitorId);
-            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
-            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
-            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
-            editor.remove(KEY_EVENT_QUEUE);
-            editor.apply();
+        if (editor == null) {
+            mOptOut = true;
+            throw new IllegalStateException("SharedPreferences unavailable");
         }
+        editor.putString(KEY_VISITOR_ID, mVisitorId);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        editor.remove(KEY_EVENT_QUEUE);
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+        clearMobileSessions(editor, retainedKey);
+        clearHeldTracks(editor);
+        if (mOptOut != null) editor.putBoolean(KEY_OPT_OUT, mOptOut);
+        if (!editor.commit()) {
+            mOptOut = true;
+            throw new IllegalStateException("Failed to persist reset");
+        }
+        mCommittedMobileStates.clear();
     }
 
     /**
@@ -225,18 +457,236 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = new JSONObject();
         mAttributionDefaultProperties = new JSONObject();
         mEventQueue = new JSONArray();
+        mQueueGeneration = UUID.randomUUID().toString();
         mOptOut = true;
         final SharedPreferences.Editor editor = editor();
-        if (editor != null) {
-            editor.putString(KEY_VISITOR_ID, mVisitorId);
-            editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
-            editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
-            editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
-            editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
-            editor.remove(KEY_EVENT_QUEUE);
-            editor.putBoolean(KEY_OPT_OUT, true);
-            editor.apply();
+        if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
+        editor.putString(KEY_VISITOR_ID, mVisitorId);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
+        editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
+        editor.remove(KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
+        editor.remove(KEY_EVENT_QUEUE);
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+        clearMobileSessions(editor, null);
+        clearHeldTracks(editor);
+        editor.putBoolean(KEY_OPT_OUT, true);
+        if (!editor.commit()) throw new IllegalStateException("Failed to persist opt-out");
+        mCommittedMobileStates.clear();
+    }
+
+    static final class MobileState {
+        String sid;
+        long startedAt;
+        long lastSessionWall;
+        long lastIssuedSessionMs;
+        long lastActive;
+        long accumulatedMs;
+        long pendingMs;
+        boolean sessionStartEmitted;
+        boolean firstOpenAccepted;
+        boolean appObserved;
+        String appVersion;
+        String appBuild;
+        JSONArray pendingFacts = new JSONArray();
+    }
+
+    static final class MobileStatePersistenceException extends IllegalStateException {
+        MobileStatePersistenceException(String message) {
+            super(message);
+        }
+    }
+
+    synchronized MobileState getMobileState(String token) {
+        ensureLoaded();
+        SharedPreferences prefs = preferences();
+        MobileState state = new MobileState();
+        if (prefs == null) return state;
+        String key = mobileKey(token);
+        if (!mCommittedMobileStates.containsKey(key)) {
+            mCommittedMobileStates.put(key, prefs.getString(key, null));
+        }
+        if (mCommittedMobileStates.get(key) == null && mExistingInstall) {
+            state.firstOpenAccepted = true;
+            state.appObserved = true;
+            state.appBuild = mLegacyAppBuild;
+            saveMobileState(token, state);
+            return state;
+        }
+        JSONObject stored = readJsonObject(mCommittedMobileStates.get(key), key);
+        state.sid = stored.optString("sid", null);
+        state.startedAt = stored.optLong("started_at");
+        state.lastSessionWall = stored.optLong("last_session_wall", state.startedAt);
+        state.lastIssuedSessionMs = stored.optLong("last_issued_session_ms", state.startedAt);
+        state.lastActive = stored.optLong("last_active");
+        state.accumulatedMs = stored.optLong("accumulated_ms");
+        state.pendingMs = stored.optLong("pending_ms");
+        state.sessionStartEmitted = stored.optBoolean("session_start_emitted");
+        state.firstOpenAccepted = stored.optBoolean("first_open_accepted");
+        state.appObserved = stored.optBoolean("app_observed");
+        state.appVersion = stored.optString("app_version", null);
+        state.appBuild = stored.optString("app_build", null);
+        JSONArray pending = stored.optJSONArray("pending_facts");
+        if (pending != null) state.pendingFacts = copyArray(pending);
+        return state;
+    }
+
+    synchronized void saveMobileState(String token, MobileState state) {
+        ensureLoaded();
+        SharedPreferences prefs = preferences();
+        if (prefs == null) {
+            throw new MobileStatePersistenceException("SharedPreferences unavailable");
+        }
+        String key = mobileKey(token);
+        String previous = mCommittedMobileStates.containsKey(key)
+                ? mCommittedMobileStates.get(key) : prefs.getString(key, null);
+        boolean installationInitialized = prefs.getBoolean("mobile_install_initialized", false);
+        String next = encodeMobileState(state);
+        if (!prefs.edit().putString(key, next)
+                .putBoolean("mobile_install_initialized", true).commit()) {
+            mCommittedMobileStates.put(key, previous);
+            SharedPreferences.Editor rollback = prefs.edit();
+            rollback.putBoolean("mobile_install_initialized", installationInitialized);
+            if (previous == null) rollback.remove(key);
+            else rollback.putString(key, previous);
+            rollback.commit();
+            throw new MobileStatePersistenceException("Failed to persist mobile session");
+        }
+        mCommittedMobileStates.put(key, next);
+    }
+
+    synchronized boolean enqueueMobileFact(String token, String factId, JSONObject event) {
+        ensureLoaded();
+        if (getOptOut()) return false;
+        MobileState state = getMobileState(token);
+        int index = -1;
+        JSONObject pending = null;
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            JSONObject candidate = state.pendingFacts.optJSONObject(i);
+            if (candidate != null && factId.equals(candidate.optString("id"))) {
+                index = i;
+                pending = candidate;
+                break;
+            }
+        }
+        if (pending == null) return false;
+        if (index != 0 || pending.optLong("occurred_at") - mWallClock.wallMillis()
+                > MobileSession.MAX_FUTURE_MS) {
+            return false;
+        }
+        final String previousState = encodeMobileState(state);
+        final String previousQueue = mEventQueue.toString();
+        JSONObject defaults = event == null ? null : event.optJSONObject("defaultProperties");
+        JSONObject properties = event == null ? null : event.optJSONObject("eventProperties");
+        if (!pending.optString("event").equals(event.optString("event"))
+                || !factId.equals(event.optString("distinct_id"))
+                || !pending.optString("visitor_id").equals(event.optString("visitor_id"))
+                || defaults == null
+                || !pending.optString("sid").equals(defaults.optString("sid"))
+                || properties == null
+                || !MobileSession.utc(pending.optLong("occurred_at")).equals(
+                        properties.optString("mobile_occurred_at"))) {
+            throw new IllegalArgumentException("Queued event does not match pending mobile fact");
+        }
+        JSONArray remaining = new JSONArray();
+        for (int i = 0; i < state.pendingFacts.length(); i++) {
+            if (i != index) remaining.put(state.pendingFacts.opt(i));
+        }
+        state.pendingFacts = remaining;
+        if ("$mobile_first_open".equals(pending.optString("event"))) {
+            state.firstOpenAccepted = true;
+        }
+        final JSONArray nextQueue = copyArray(mEventQueue);
+        final JSONObject eventCopy;
+        try {
+            eventCopy = new JSONObject(event.toString());
+            eventCopy.put(QUEUED_MANUAL_ID, pending.has("is_manually_set_id")
+                    ? pending.optBoolean("is_manually_set_id") : mIsManuallySetId);
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Queued event is not valid JSON", e);
+        }
+        nextQueue.put(eventCopy);
+        final SharedPreferences.Editor editor = editor();
+        if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
+        String nextState = encodeMobileState(state);
+        editor.putString(mobileKey(token), nextState);
+        editor.putString(KEY_EVENT_QUEUE, nextQueue.toString());
+        editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
+        if (!editor.commit()) {
+            // A failed disk commit can leave the in-memory preferences advanced, so restore retry state.
+            SharedPreferences.Editor rollback = editor();
+            if (rollback != null) {
+                rollback.putString(mobileKey(token), previousState);
+                rollback.putString(KEY_EVENT_QUEUE, previousQueue);
+                rollback.commit();
+            }
+            throw new IllegalStateException("Failed to queue mobile fact");
+        }
+        mEventQueue = nextQueue;
+        mCommittedMobileStates.put(mobileKey(token), nextState);
+        return true;
+    }
+
+    private static String encodeMobileState(MobileState state) {
+        JSONObject stored = new JSONObject();
+        try {
+            if (state.sid != null) stored.put("sid", state.sid);
+            stored.put("started_at", state.startedAt);
+            stored.put("last_session_wall", state.lastSessionWall);
+            stored.put("last_issued_session_ms", state.lastIssuedSessionMs);
+            stored.put("last_active", state.lastActive);
+            stored.put("accumulated_ms", state.accumulatedMs);
+            stored.put("pending_ms", state.pendingMs);
+            stored.put("session_start_emitted", state.sessionStartEmitted);
+            stored.put("first_open_accepted", state.firstOpenAccepted);
+            stored.put("app_observed", state.appObserved);
+            if (state.appVersion != null) stored.put("app_version", state.appVersion);
+            if (state.appBuild != null) stored.put("app_build", state.appBuild);
+            stored.put("pending_facts", state.pendingFacts);
+        } catch (JSONException e) {
+            throw new IllegalStateException(e);
+        }
+        return stored.toString();
+    }
+
+    private static String mobileKey(String token) {
+        return KEY_MOBILE_SESSION_PREFIX + UUID.nameUUIDFromBytes(
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String heldTracksKey(String token) {
+        return KEY_HELD_TRACKS_PREFIX + UUID.nameUUIDFromBytes(
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String indexedIngestKey(String token) {
+        return KEY_INDEXED_INGEST_PREFIX + UUID.nameUUIDFromBytes(
+                token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void clearMobileSessions(SharedPreferences.Editor editor, String retainedKey) {
+        SharedPreferences prefs = preferences();
+        if (prefs == null) return;
+        for (String key : prefs.getAll().keySet()) {
+            if (!key.startsWith(KEY_MOBILE_SESSION_PREFIX) || key.equals(retainedKey)) continue;
+            JSONObject stored = readJsonObject(prefs, key);
+            stored.remove("sid");
+            stored.remove("started_at");
+            stored.remove("last_active");
+            stored.remove("accumulated_ms");
+            stored.remove("pending_ms");
+            stored.remove("session_start_emitted");
+            stored.remove("pending_facts");
+            editor.putString(key, stored.toString());
+        }
+    }
+
+    private void clearHeldTracks(SharedPreferences.Editor editor) {
+        SharedPreferences prefs = preferences();
+        if (prefs == null) return;
+        for (String key : prefs.getAll().keySet()) {
+            if (key.startsWith(KEY_HELD_TRACKS_PREFIX)) editor.remove(key);
         }
     }
 
@@ -258,6 +708,13 @@ import java.util.concurrent.Future;
             return;
         }
 
+        mExistingInstall = !prefs.getBoolean("mobile_install_initialized", false)
+                && (prefs.getBoolean("has_launched", false) || prefs.contains(KEY_VISITOR_ID));
+        int previousBuild = prefs.getInt("latest_version_code", -1);
+        mLegacyAppBuild = previousBuild >= 0 ? Integer.toString(previousBuild) : null;
+        if (!mExistingInstall) {
+            prefs.edit().putBoolean("mobile_install_initialized", true).apply();
+        }
         mVisitorId = prefs.getString(KEY_VISITOR_ID, null);
         mIsManuallySetId = prefs.getBoolean(KEY_IS_MANUALLY_SET_ID, false);
         if (prefs.contains(KEY_OPT_OUT)) {
@@ -268,6 +725,27 @@ import java.util.concurrent.Future;
         mDefaultUserConsentProperties = readJsonObject(prefs, KEY_DEFAULT_USER_CONSENT_PROPERTIES);
         mAttributionDefaultProperties = readJsonObject(prefs, KEY_ATTRIBUTION_DEFAULT_PROPERTIES);
         mEventQueue = readJsonArray(prefs, KEY_EVENT_QUEUE);
+        JSONArray migrated = new JSONArray();
+        try {
+            for (int i = 0; i < mEventQueue.length(); i++) {
+                JSONObject event = mEventQueue.optJSONObject(i);
+                migrated.put(event == null ? mEventQueue.opt(i) : Track.migrateQueuedEvent(event));
+            }
+        } catch (JSONException e) {
+            throw new IllegalStateException("Queued events are not valid JSON", e);
+        }
+        if (!migrated.toString().equals(mEventQueue.toString())) {
+            if (!prefs.edit().putString(KEY_EVENT_QUEUE, migrated.toString()).commit()) {
+                prefs.edit().putString(KEY_EVENT_QUEUE, mEventQueue.toString()).commit();
+                throw new IllegalStateException("Failed to migrate queued events");
+            }
+            mEventQueue = migrated;
+        }
+        mQueueGeneration = prefs.getString(KEY_EVENT_QUEUE_GENERATION, null);
+        if (mQueueGeneration == null) {
+            mQueueGeneration = UUID.randomUUID().toString();
+            prefs.edit().putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration).apply();
+        }
 
         if (mVisitorId == null) {
             mVisitorId = UUID.randomUUID().toString();
@@ -280,12 +758,18 @@ import java.util.concurrent.Future;
     }
 
     private SharedPreferences.Editor editor() {
+        SharedPreferences prefs = preferences();
+        return prefs == null ? null : prefs.edit();
+    }
+
+    private SharedPreferences preferences() {
         try {
-            return mPrefsLoader.get().edit();
+            return mPrefsLoader.get();
         } catch (ExecutionException e) {
-            OPLog.e(LOGTAG, "Can't get SharedPreferences editor", e.getCause());
+            OPLog.e(LOGTAG, "Can't get SharedPreferences", e.getCause());
         } catch (InterruptedException e) {
-            OPLog.e(LOGTAG, "Interrupted getting editor", e);
+            Thread.currentThread().interrupt();
+            OPLog.e(LOGTAG, "Interrupted getting SharedPreferences", e);
         }
         return null;
     }
@@ -302,12 +786,29 @@ import java.util.concurrent.Future;
         final SharedPreferences.Editor editor = editor();
         if (editor != null) {
             editor.putString(KEY_EVENT_QUEUE, mEventQueue.toString());
+            editor.putString(KEY_EVENT_QUEUE_GENERATION, mQueueGeneration);
             editor.apply();
         }
     }
 
+    synchronized JSONObject captureIdentityMode(JSONObject event) {
+        ensureLoaded();
+        try {
+            JSONObject captured = new JSONObject(event.toString());
+            if (!captured.has(QUEUED_MANUAL_ID)) {
+                captured.put(QUEUED_MANUAL_ID, mIsManuallySetId);
+            }
+            return captured;
+        } catch (JSONException e) {
+            throw new IllegalArgumentException("Queued event is not valid JSON", e);
+        }
+    }
+
     private static JSONObject readJsonObject(SharedPreferences prefs, String key) {
-        final String raw = prefs.getString(key, null);
+        return readJsonObject(prefs.getString(key, null), key);
+    }
+
+    private static JSONObject readJsonObject(String raw, String key) {
         if (raw == null) return new JSONObject();
         try {
             return new JSONObject(raw);

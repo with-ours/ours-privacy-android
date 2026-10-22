@@ -8,6 +8,7 @@ import android.os.Process;
 
 import com.oursprivacy.android.util.HttpService;
 import com.oursprivacy.android.util.OPLog;
+import com.oursprivacy.android.util.ProxyServerInteractor;
 import com.oursprivacy.android.util.RemoteService;
 import com.oursprivacy.android.util.RemoteService.ServiceUnavailableException;
 
@@ -16,6 +17,12 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -36,18 +43,24 @@ import java.util.concurrent.TimeUnit;
      * canonical envelope without making real network calls.
      */
     /* package */ static volatile RemoteService sTestRemoteService;
+    /* package */ static volatile Runnable sTestBatchReady;
 
     private final Context mContext;
     private final OPConfig mConfig;
     private final String mToken;
     private final PersistentIdentity mPersistence;
+    private final IngestRejectionListener mRejectionListener;
+    private final UploadFence mUploadFence;
     private final Worker mWorker;
 
-    AnalyticsMessages(Context context, OPConfig config, String token, PersistentIdentity persistence) {
+    AnalyticsMessages(Context context, OPConfig config, String token,
+                      PersistentIdentity persistence, IngestRejectionListener rejectionListener) {
         mContext = context.getApplicationContext();
         mConfig = config;
         mToken = token;
         mPersistence = persistence;
+        mRejectionListener = rejectionListener;
+        mUploadFence = new UploadFence(persistence);
         mWorker = new Worker();
         getPoster().checkIsOursPrivacyBlocked();
     }
@@ -55,8 +68,30 @@ import java.util.concurrent.TimeUnit;
     void enqueue(JSONObject event) {
         final Message m = Message.obtain();
         m.what = ENQUEUE_EVENT;
-        m.obj = event;
+        m.obj = new QueuedEvent(mPersistence.captureIdentityMode(event), mPersistence.queueGeneration());
         mWorker.runMessage(m);
+    }
+
+    List<UploadFence.Lease> revokeUploads() {
+        return mUploadFence.revoke();
+    }
+
+    void openUploads() {
+        mUploadFence.open();
+    }
+
+    void cancelUploads(List<UploadFence.Lease> leases) {
+        for (UploadFence.Lease lease : leases) {
+            try {
+                lease.cancel();
+            } catch (RuntimeException e) {
+                OPLog.w(LOGTAG, "Unable to cancel active request; waiting for completion");
+            }
+        }
+    }
+
+    void awaitUploads(List<UploadFence.Lease> leases) {
+        for (UploadFence.Lease lease : leases) lease.awaitCompletion();
     }
 
     void flushNow() {
@@ -124,6 +159,8 @@ import java.util.concurrent.TimeUnit;
     private final class Worker {
         private final Object mHandlerLock = new Object();
         private Handler mHandler;
+        private String malformedHead;
+        private int malformedAttempts;
         private final long mFlushInterval;
 
         Worker() {
@@ -170,8 +207,8 @@ import java.util.concurrent.TimeUnit;
                 try {
                     switch (msg.what) {
                         case ENQUEUE_EVENT: {
-                            final JSONObject event = (JSONObject) msg.obj;
-                            mPersistence.enqueueEvent(event);
+                            final QueuedEvent queued = (QueuedEvent) msg.obj;
+                            mPersistence.enqueueIfAllowed(queued.event, queued.generation);
                             if (mPersistence.getQueueSize() >= mConfig.getBulkUploadLimit()) {
                                 sendBatch();
                             }
@@ -224,39 +261,90 @@ import java.util.concurrent.TimeUnit;
 
             final int batchSize = mConfig.getFlushBatchSize();
             while (mPersistence.getQueueSize() > 0) {
-                final JSONArray snapshot = mPersistence.getQueueSnapshot();
-                final int take = Math.min(batchSize, snapshot.length());
+                final PersistentIdentity.QueueSnapshot snapshot = mPersistence.getQueueSnapshotForFlush();
+                final JSONObject first = snapshot.events.optJSONObject(0);
+                if (first == null) return;
+                final boolean manuallySetId = snapshot.manuallySetId(first);
                 final JSONArray batch = new JSONArray();
-                for (int i = 0; i < take; i++) {
-                    batch.put(snapshot.opt(i));
+                for (int i = 0; i < Math.min(batchSize, snapshot.events.length()); i++) {
+                    final JSONObject event = snapshot.events.optJSONObject(i);
+                    if (event == null
+                            || !first.optString("visitor_id").equals(event.optString("visitor_id"))
+                            || manuallySetId != snapshot.manuallySetId(event)) break;
+                    batch.put(event);
+                }
+                final int take = batch.length();
+                String head = snapshot.generation + first.optString("distinct_id");
+                if (!head.equals(malformedHead)) {
+                    malformedHead = head;
+                    malformedAttempts = 0;
                 }
 
                 final String body;
                 try {
-                    body = buildEnvelope(batch).toString();
+                    body = buildEnvelope(batch, manuallySetId).toString();
                 } catch (JSONException e) {
-                    OPLog.e(LOGTAG, "Failed to build envelope; dropping batch", e);
-                    mPersistence.dropFromQueue(take);
-                    continue;
+                    OPLog.e(LOGTAG, "Failed to build envelope; will retry batch", e);
+                    return;
                 }
+                final Runnable batchReady = sTestBatchReady;
+                if (batchReady != null) batchReady.run();
 
+                final String endpoint = mConfig.getEventsEndpoint();
+                final ProxyServerInteractor interactor = mConfig.getProxyServerInteractor();
+                final DeferredProxy proxy = interactor == null ? null
+                        : new DeferredProxy(interactor);
+                final UploadFence.Lease lease = mUploadFence.begin(snapshot.generation);
+                if (lease == null) return;
                 try {
-                    final byte[] response = poster.performRequest(
-                            mConfig.getEventsEndpoint(),
-                            mConfig.getProxyServerInteractor(),
-                            null,
-                            body,
-                            mConfig.getSSLSocketFactory());
+                    final byte[] response;
+                    try {
+                        response = poster.performRequest(endpoint, proxy, null, body,
+                                mConfig.getSSLSocketFactory(), lease.cancellation());
+                    } finally {
+                        lease.finishTransport();
+                        if (proxy != null) proxy.deliver();
+                    }
                     if (response == null) {
                         OPLog.v(LOGTAG, "No response from ingest endpoint; will retry on next flush");
                         return;
                     }
-                    mPersistence.dropFromQueue(take);
+                    BatchAcknowledgment acknowledgment;
+                    try {
+                        acknowledgment = parseAcknowledgment(response, batch);
+                    } catch (JSONException e) {
+                        if (++malformedAttempts < 5) {
+                            OPLog.w(LOGTAG, "Invalid ingest acknowledgment; will retry batch");
+                            return;
+                        }
+                        acknowledgment = rejectedBatch(batch, "invalid_acknowledgment");
+                    }
+                    if (acknowledgment == null || !lease.isCurrent()) return;
+                    if (!mPersistence.acknowledgeBatch(mToken, snapshot, take,
+                            acknowledgment.indexed)) {
+                        OPLog.w(LOGTAG, "Ingest acknowledgment not applied; will retry batch");
+                        return;
+                    }
+                    malformedAttempts = 0;
+                    reportRejections(acknowledgment, lease);
                 } catch (final ServiceUnavailableException e) {
                     OPLog.v(LOGTAG, "Service unavailable; backing off " + e.getRetryAfter() + "s");
                     final long retryMs = Math.max(1000L, e.getRetryAfter() * 1000L);
                     scheduleFlush(retryMs);
                     return;
+                } catch (final RemoteService.HttpStatusException e) {
+                    if (!lease.isCurrent()) return;
+                    int status = e.getStatusCode();
+                    if (status >= 400 && status < 500 && status != 403 && status != 408
+                            && status != 425 && status != 429) {
+                        BatchAcknowledgment rejection = rejectedBatch(batch, "http_" + status);
+                        if (!mPersistence.acknowledgeBatch(mToken, snapshot, take, false)) return;
+                        reportRejections(rejection, lease);
+                        malformedAttempts = 0;
+                    } else {
+                        OPLog.i(LOGTAG, "Temporary HTTP rejection; will retry");
+                        return;
+                    }
                 } catch (final IOException e) {
                     OPLog.i(LOGTAG, "Flush failed; will retry on next flush", e);
                     return;
@@ -264,12 +352,162 @@ import java.util.concurrent.TimeUnit;
             }
         }
 
-        private JSONObject buildEnvelope(JSONArray batch) throws JSONException {
+        private BatchAcknowledgment parseAcknowledgment(byte[] response, JSONArray batch)
+                throws JSONException {
+            if (response.length == 0) {
+                return new BatchAcknowledgment(false, new ArrayList<>());
+            }
+            final JSONObject result = new JSONObject(new String(response, StandardCharsets.UTF_8));
+            if (Boolean.FALSE.equals(result.opt("success"))) {
+                return Boolean.TRUE.equals(result.opt("retryable")) ? null
+                        : rejectedBatch(batch, "ingest_rejected");
+            }
+            final boolean indexed = result.has("accepted") || result.has("rejected");
+            if (!indexed) {
+                return new BatchAcknowledgment(false, new ArrayList<>());
+            }
+            if (!Boolean.TRUE.equals(result.opt("success"))) {
+                throw new JSONException("Incomplete indexed ingest response");
+            }
+            final Object acceptedValue = result.opt("accepted");
+            final int accepted = integerValue(acceptedValue);
+            final JSONArray rejected = result.optJSONArray("rejected");
+            if (accepted < 0 || accepted > batch.length() || rejected == null) {
+                throw new JSONException("Invalid indexed ingest counts");
+            }
+            final Set<Integer> indexes = new HashSet<>();
+            final List<IngestRejection> rejections = new ArrayList<>();
+            for (int i = 0; i < rejected.length(); i++) {
+                final JSONObject entry = rejected.optJSONObject(i);
+                if (entry == null) throw new JSONException("Invalid ingest rejection");
+                final int index = integerValue(entry.opt("index"));
+                final Object code = entry.opt("code");
+                if (index < 0 || index >= batch.length() || !indexes.add(index)
+                        || !(code instanceof String) || ((String) code).isEmpty()) {
+                    throw new JSONException("Invalid ingest rejection");
+                }
+                final JSONObject event = batch.optJSONObject(index);
+                if (event == null || !(event.opt("distinct_id") instanceof String)
+                        || ((String) event.opt("distinct_id")).isEmpty()) {
+                    throw new JSONException("Missing rejected event ID");
+                }
+                rejections.add(new IngestRejection(event.optString("distinct_id"), (String) code));
+            }
+            if (accepted + rejected.length() != batch.length()) {
+                throw new JSONException("Incomplete indexed ingest response");
+            }
+            return new BatchAcknowledgment(true, rejections);
+        }
+
+        private BatchAcknowledgment rejectedBatch(JSONArray batch, String code) {
+            List<IngestRejection> rejections = new ArrayList<>();
+            for (int i = 0; i < batch.length(); i++) {
+                rejections.add(new IngestRejection(batch.optJSONObject(i)
+                        .optString("distinct_id"), code));
+            }
+            return new BatchAcknowledgment(false, rejections);
+        }
+
+        private void reportRejections(BatchAcknowledgment acknowledgment, UploadFence.Lease lease) {
+            if (mRejectionListener == null) return;
+            for (IngestRejection rejection : acknowledgment.rejections) {
+                if (!lease.isCurrent()) return;
+                try {
+                    mRejectionListener.onRejected(rejection.distinctId, rejection.code);
+                } catch (RuntimeException e) {
+                    OPLog.w(LOGTAG, "Ingest rejection listener failed");
+                }
+            }
+        }
+
+        private int integerValue(Object value) throws JSONException {
+            if (value instanceof Integer) return (Integer) value;
+            if (value instanceof Long && (Long) value >= Integer.MIN_VALUE
+                    && (Long) value <= Integer.MAX_VALUE) {
+                return ((Long) value).intValue();
+            }
+            throw new JSONException("Expected integer");
+        }
+
+        private JSONObject buildEnvelope(JSONArray batch, boolean manuallySetId) throws JSONException {
             final JSONObject envelope = new JSONObject();
             envelope.put("token", mToken);
-            envelope.put("is_manually_set_id", mPersistence.isManuallySetId());
-            envelope.put("data", batch);
+            envelope.put("is_manually_set_id", manuallySetId);
+            final JSONArray data = new JSONArray(batch.toString());
+            for (int i = 0; i < data.length(); i++) {
+                final JSONObject event = data.getJSONObject(i);
+                final JSONObject defaults = event.optJSONObject("defaultProperties");
+                final JSONObject properties = event.optJSONObject("eventProperties");
+                if (defaults != null && (defaults.has("mobile_session_started_at")
+                        || defaults.has("mobile_platform")
+                        || (properties != null && properties.has("mobile_contract_version")
+                        && defaults.has("sid")
+                        && !MobileSession.validSessionId(defaults.optString("sid"))))) {
+                    throw new JSONException("Unmigrated mobile session");
+                }
+                event.remove(PersistentIdentity.QUEUED_MANUAL_ID);
+            }
+            envelope.put("data", data);
             return envelope;
+        }
+    }
+
+    private static final class QueuedEvent {
+        final JSONObject event;
+        final String generation;
+
+        QueuedEvent(JSONObject event, String generation) {
+            this.event = event;
+            this.generation = generation;
+        }
+    }
+
+    private static final class DeferredProxy implements ProxyServerInteractor {
+        private final ProxyServerInteractor delegate;
+        private final Map<String, String> headers;
+        private final List<Integer> responses = new ArrayList<>();
+        private final List<String> paths = new ArrayList<>();
+
+        DeferredProxy(ProxyServerInteractor delegate) {
+            this.delegate = delegate;
+            this.headers = delegate.getProxyRequestHeaders();
+        }
+
+        @Override
+        public Map<String, String> getProxyRequestHeaders() {
+            return headers;
+        }
+
+        @Override
+        public void onProxyResponse(String apiPath, int responseCode) {
+            paths.add(apiPath);
+            responses.add(responseCode);
+        }
+
+        void deliver() {
+            for (int i = 0; i < responses.size(); i++) {
+                delegate.onProxyResponse(paths.get(i), responses.get(i));
+            }
+        }
+    }
+
+    private static final class BatchAcknowledgment {
+        final boolean indexed;
+        final List<IngestRejection> rejections;
+
+        BatchAcknowledgment(boolean indexed, List<IngestRejection> rejections) {
+            this.indexed = indexed;
+            this.rejections = rejections;
+        }
+    }
+
+    private static final class IngestRejection {
+        final String distinctId;
+        final String code;
+
+        IngestRejection(String distinctId, String code) {
+            this.distinctId = distinctId;
+            this.code = code;
         }
     }
 
