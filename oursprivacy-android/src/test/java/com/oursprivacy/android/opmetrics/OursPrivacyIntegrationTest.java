@@ -4505,6 +4505,8 @@ public class OursPrivacyIntegrationTest {
         OursPrivacyAPI op = newApi(clock, preferencesWithQueueCommitFailure(failQueueCommit));
         op.initialize(TOKEN, OursPrivacyInitOptions.builder()
                 .trackAutomaticEvents(true).build());
+        // Finish initialization events so opt-in rotates a session at the same clock time.
+        awaitTracking();
         op.optOutTracking();
         OursPrivacyActivityLifecycleCallbacks callbacks =
                 ReflectionHelpers.getField(op, "mLifecycleCallbacks");
@@ -4514,7 +4516,9 @@ public class OursPrivacyIntegrationTest {
         op.optInTracking();
         String originalVisitor = op.getVisitorId();
         String originalSid = mobileState().getString("sid");
-        String originalOccurredAt = MobileSession.utc(clock.wall);
+        long startedAt = Long.parseLong(originalSid);
+        assertEquals(clock.wall + 1, startedAt);
+        String originalOccurredAt = MobileSession.utc(startedAt);
 
         op.setVisitorId("new-visitor");
         assertEquals(0, queuedCount());
