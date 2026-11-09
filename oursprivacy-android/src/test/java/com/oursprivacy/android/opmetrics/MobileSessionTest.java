@@ -607,16 +607,32 @@ public class MobileSessionTest {
     }
 
     @Test
-    public void resetClearsPersistedSessionButPreservesFirstOpenAcceptance() {
+    public void resetClearsPersistedSessionButPreservesFirstOpenAcceptance() throws Exception {
         MobileSession session = session("1.0", "10");
-        String sid = session.foreground(true).get(0).snapshot().sid();
+        MobileSession.MobileFact firstOpen = session.foreground(true).get(0);
+        String sid = firstOpen.snapshot().sid();
         acceptFirstOpen(session);
         clock.advance(1);
         identity.reset();
 
-        List<MobileSession.MobileFact> facts = recreated("1.0", "10").foreground(true);
+        List<MobileSession.MobileFact> facts = session("1.0", "10").foreground(true);
         assertEquals(List.of("$mobile_app_open", "$mobile_session_start"), names(facts));
         assertNotEquals(sid, facts.get(0).snapshot().sid());
+        assertNotEquals(firstOpen.visitorId(), facts.get(0).visitorId());
+        assertFalse(firstOpen.toJson().getBoolean("is_manually_set_id"));
+        for (MobileSession.MobileFact fact : facts) {
+            assertTrue(fact.toJson().getBoolean("is_manually_set_id"));
+        }
+        MobileSession restarted = recreated("1.0", "10");
+        List<MobileSession.MobileFact> restored = restarted.pendingFacts();
+        assertEquals(names(facts), names(restored));
+        for (MobileSession.MobileFact fact : restored) {
+            assertEquals(facts.get(0).visitorId(), fact.visitorId());
+            assertTrue(fact.toJson().getBoolean("is_manually_set_id"));
+        }
+        MobileSession.MobileFact reopened = restarted.foreground(true).get(0);
+        assertEquals(facts.get(0).visitorId(), reopened.visitorId());
+        assertTrue(reopened.toJson().getBoolean("is_manually_set_id"));
     }
 
     @Test

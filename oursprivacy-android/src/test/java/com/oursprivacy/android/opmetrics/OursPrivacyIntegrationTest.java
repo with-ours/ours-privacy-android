@@ -590,14 +590,37 @@ public class OursPrivacyIntegrationTest {
         }).when(wrapped).edit();
         OursPrivacyAPI op = newApi(new FakeClock(), wrapped);
         op.initialize(TOKEN, null);
+        String initialVisitor = op.getVisitorId();
+        op.updateDefaultEventProperties(jsonOf("reset_default", "retained_on_failure"));
         op.track("before_failure");
         awaitTracking();
         failReset.set(true);
         op.reset();
         awaitTracking();
+        assertEquals(initialVisitor, op.getVisitorId());
+        assertEquals(initialVisitor, preferences().getString("visitor_id", null));
+        assertFalse(preferences().getBoolean("is_manually_set_id", true));
+        op.track("after_failure");
+        assertEquals("retained_on_failure", queuedEvent("after_failure")
+                .getJSONObject("eventProperties").getString("reset_default"));
+        assertFalse(queuedEvent("after_failure").getBoolean("_is_manually_set_id"));
+
         op.reset();
         op.track("after_recovery");
         awaitTracking();
+        String recoveredVisitor = op.getVisitorId();
+        assertNotEquals(initialVisitor, recoveredVisitor);
+        assertTrue(queuedEvent("after_recovery").getBoolean("_is_manually_set_id"));
+        assertFalse(queuedEvent("after_recovery").getJSONObject("eventProperties")
+                .has("reset_default"));
+        failReset.set(true);
+        op.reset();
+        awaitTracking();
+        assertEquals(recoveredVisitor, op.getVisitorId());
+        assertEquals(recoveredVisitor, preferences().getString("visitor_id", null));
+        assertTrue(preferences().getBoolean("is_manually_set_id", false));
+        op.track("after_second_failure");
+        assertTrue(queuedEvent("after_second_failure").getBoolean("_is_manually_set_id"));
 
         assertFalse(op.hasOptedOutTracking());
         assertEquals(1, queuedEventCount("before_failure"));
@@ -609,9 +632,11 @@ public class OursPrivacyIntegrationTest {
 
     @Test
     public void resetPreservesQueuedFirstOpenAndOldIdentityEvents() throws Exception {
-        OursPrivacyAPI op = newApi(new FakeClock(), preferences());
-        op.initialize(TOKEN, OursPrivacyInitOptions.builder()
-                .trackAutomaticEvents(true).build());
+        FakeClock clock = new FakeClock();
+        OursPrivacyInitOptions options = OursPrivacyInitOptions.builder()
+                .trackAutomaticEvents(true).build();
+        OursPrivacyAPI op = newApi(clock, preferences());
+        op.initialize(TOKEN, options);
         op.setFlushOnBackground(false);
         ReflectionHelpers.<OursPrivacyActivityLifecycleCallbacks>getField(
                 op, "mLifecycleCallbacks").onActivityResumed(null);
@@ -630,6 +655,29 @@ public class OursPrivacyIntegrationTest {
         assertEquals(1, count(data, "$mobile_first_open"));
         assertEquals(before, find(data, "before_reset").getString("visitor_id"));
         assertEquals(after, find(data, "after_reset").getString("visitor_id"));
+        assertEquals(before, nth(data, "$mobile_session_start", 0).getString("visitor_id"));
+        assertEquals(after, nth(data, "$mobile_session_start", 1).getString("visitor_id"));
+        for (String body : mNetwork.bodies()) {
+            JSONObject envelope = new JSONObject(body);
+            JSONArray batch = envelope.getJSONArray("data");
+            for (int i = 0; i < batch.length(); i++) {
+                String visitor = batch.getJSONObject(i).getString("visitor_id");
+                assertTrue(visitor, before.equals(visitor) || after.equals(visitor));
+                assertEquals(visitor, after.equals(visitor),
+                        envelope.getBoolean("is_manually_set_id"));
+            }
+        }
+
+        op.shutdownForTests();
+        mNetwork.reset();
+        OursPrivacyAPI restarted = newApi(clock, preferences());
+        restarted.initialize(TOKEN, options);
+        assertEquals(after, restarted.getVisitorId());
+        restarted.track("after_restart");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertTrue(mNetwork.bodyAt(0).getBoolean("is_manually_set_id"));
+        assertEquals(after, find(allCapturedData(), "after_restart").getString("visitor_id"));
     }
 
     @Test
@@ -4402,6 +4450,7 @@ public class OursPrivacyIntegrationTest {
         awaitTracking();
         failClearCommit.set(false);
         first.reset();
+        String resetVisitor = first.getVisitorId();
         assertEquals(0, queuedCount());
         assertEquals(0, heldTracks().length());
         first.shutdownForTests();
@@ -4417,6 +4466,18 @@ public class OursPrivacyIntegrationTest {
         assertEquals(0, queuedCount());
         assertEquals(0, heldTracks().length());
         assertEquals(0, mNetwork.callCount());
+
+        restarted.optInTracking();
+        restarted.onForeground();
+        restarted.track("after_recovery_opt_in");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        for (String body : mNetwork.bodies()) {
+            assertTrue(new JSONObject(body).getBoolean("is_manually_set_id"));
+        }
+        assertEquals(resetVisitor, restarted.getVisitorId());
+        assertEquals(resetVisitor, find(allCapturedData(), "after_recovery_opt_in")
+                .getString("visitor_id"));
     }
 
     @Test
@@ -6172,6 +6233,7 @@ public class OursPrivacyIntegrationTest {
         final OursPrivacyAPI op = newApi();
         op.initialize(TOKEN, null);
 
+        op.setVisitorId("before-opt-out");
         op.track("queued_before_opt_out");
         op.optOutTracking();
         op.track("dropped_after_opt_out");
@@ -6180,6 +6242,13 @@ public class OursPrivacyIntegrationTest {
 
         assertEquals("flush() is a no-op when opted out", 0, mNetwork.callCount());
         assertTrue(op.hasOptedOutTracking());
+        op.optInTracking();
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertFalse(mNetwork.bodyAt(0).getBoolean("is_manually_set_id"));
+        assertNotEquals("before-opt-out", op.getVisitorId());
+        assertEquals(0, count(allCapturedData(), "queued_before_opt_out"));
+        assertEquals(0, count(allCapturedData(), "dropped_after_opt_out"));
     }
 
     @Test
@@ -6265,8 +6334,34 @@ public class OursPrivacyIntegrationTest {
         final String visitorAfter = op.getVisitorId();
         assertFalse("visitor_id rotated", visitorBefore.equals(visitorAfter));
 
+        assertTrue(mNetwork.bodyAt(0).getBoolean("is_manually_set_id"));
         final JSONObject item = mNetwork.bodyAt(0).getJSONArray("data").getJSONObject(0);
+        assertEquals(visitorAfter, item.getString("visitor_id"));
         assertEquals(4, item.getJSONObject("eventProperties").length());
+
+        op.optOutTracking();
+        op.reset();
+        String optedOutResetVisitor = op.getVisitorId();
+        assertNotEquals(visitorAfter, optedOutResetVisitor);
+        op.track("suppressed_after_opted_out_reset");
+        op.flush();
+        assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertTrue(op.hasOptedOutTracking());
+        assertEquals(1, mNetwork.callCount());
+        op.shutdownForTests();
+
+        OursPrivacyAPI restarted = newApi();
+        restarted.initialize(TOKEN, null);
+        assertTrue(restarted.hasOptedOutTracking());
+        assertEquals(optedOutResetVisitor, restarted.getVisitorId());
+        restarted.optInTracking();
+        restarted.track("after_opted_out_reset");
+        restarted.flush();
+        assertTrue(restarted.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+        assertTrue(mNetwork.bodyAt(1).getBoolean("is_manually_set_id"));
+        assertEquals(optedOutResetVisitor, find(allCapturedData(), "after_opted_out_reset")
+                .getString("visitor_id"));
+        assertEquals(0, count(allCapturedData(), "suppressed_after_opted_out_reset"));
     }
 
     private static JSONObject ordinaryEventProperties(int count) throws Exception {

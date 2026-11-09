@@ -691,7 +691,7 @@ public class OursPrivacyAPI {
     private void resetNow(String visitorId, MobileSession.TimePoint point) {
         if (!requireInitialized("reset")) return;
         if (mPrivacyClearFailed) {
-            mPersistence.optOutAndClear();
+            mPersistence.optOutAndClear(visitorId, true);
             mPrivacyClearFailed = false;
             return;
         }
