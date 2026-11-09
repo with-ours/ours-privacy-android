@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.1.1
+
+- Fix visitor identity handling after reset while preserving queued events' original identities.
+
 ## v3.1.0
 
 - Opt into canonical `$mobile_*` lifecycle events with `trackAutomaticEvents(true)`; call `trackScreen(name)` for explicit screen views, including custom navigation.

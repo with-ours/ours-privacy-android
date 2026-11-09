@@ -384,7 +384,7 @@ import java.util.concurrent.Future;
         SharedPreferences.Editor editor = editor();
         if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
         editor.putString(KEY_VISITOR_ID, visitorId);
-        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, true);
         editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
@@ -403,7 +403,7 @@ import java.util.concurrent.Future;
             throw new IllegalStateException("Failed to persist reset");
         }
         mVisitorId = visitorId;
-        mIsManuallySetId = false;
+        mIsManuallySetId = true;
         mDefaultEventProperties = new JSONObject();
         mDefaultUserCustomProperties = new JSONObject();
         mDefaultUserConsentProperties = new JSONObject();
@@ -413,7 +413,7 @@ import java.util.concurrent.Future;
     private void resetKeepingMobileSession(String retainedKey) {
         ensureLoaded();
         mVisitorId = UUID.randomUUID().toString();
-        mIsManuallySetId = false;
+        mIsManuallySetId = true;
         mDefaultEventProperties = new JSONObject();
         mDefaultUserCustomProperties = new JSONObject();
         mDefaultUserConsentProperties = new JSONObject();
@@ -426,7 +426,7 @@ import java.util.concurrent.Future;
             throw new IllegalStateException("SharedPreferences unavailable");
         }
         editor.putString(KEY_VISITOR_ID, mVisitorId);
-        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, true);
         editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
@@ -449,9 +449,13 @@ import java.util.concurrent.Future;
      * effectively forgotten on the next event lifecycle.
      */
     synchronized void optOutAndClear() {
+        optOutAndClear(UUID.randomUUID().toString(), false);
+    }
+
+    synchronized void optOutAndClear(String visitorId, boolean manuallySet) {
         ensureLoaded();
-        mVisitorId = UUID.randomUUID().toString();
-        mIsManuallySetId = false;
+        mVisitorId = visitorId;
+        mIsManuallySetId = manuallySet;
         mDefaultEventProperties = new JSONObject();
         mDefaultUserCustomProperties = new JSONObject();
         mDefaultUserConsentProperties = new JSONObject();
@@ -462,7 +466,7 @@ import java.util.concurrent.Future;
         final SharedPreferences.Editor editor = editor();
         if (editor == null) throw new IllegalStateException("SharedPreferences unavailable");
         editor.putString(KEY_VISITOR_ID, mVisitorId);
-        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, false);
+        editor.putBoolean(KEY_IS_MANUALLY_SET_ID, mIsManuallySetId);
         editor.remove(KEY_DEFAULT_EVENT_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CUSTOM_PROPERTIES);
         editor.remove(KEY_DEFAULT_USER_CONSENT_PROPERTIES);
