@@ -176,7 +176,7 @@ Applies your project token and bootstrap options. Must be called exactly once. P
 #### `void track(String eventName, JSONObject eventProperties, OursPrivacyUserProperties userProperties)`
 
 Fires an event. `eventProperties` end up on the wire under `eventProperties`; `userProperties` get merged with the store-level default user-property bags and end up under `userProperties`.
-Tracking, screen, identity, and default-property changes are ordered on a background worker. Storage failures are logged and the affected operation is dropped; they do not throw into the host app. Invalid explicit screen labels still throw `IllegalArgumentException`.
+Tracking, screen, identity, and default-property changes are ordered on a background worker. Storage failures are logged and the affected operation is dropped; they do not throw into the host app. Invalid explicit screen labels are ignored and logged as warnings.
 
 Bootstrap migration must persist before upload workers start. Storage failures during `initialize()` are logged and disable that SDK instance without throwing into the host app. Tracking and consent calls become no-ops, and `hasOptedOutTracking()` returns true. Create a new SDK instance after storage recovers, or retry on the next launch. Legacy installation evidence and queued events remain available for that retry.
 
@@ -184,7 +184,7 @@ Names beginning with `$mobile_` are reserved for SDK telemetry and are ignored b
 
 #### `void trackScreen(String name)`
 
-Queues a `$mobile_screen_view` with `eventProperties.screen_name`. Use a stable developer-chosen destination label of 1–80 characters, starting with an ASCII letter and then containing only ASCII letters, digits, spaces, `_`, or `-`, with no trailing space. Empty names and labels outside those character and length rules throw `IllegalArgumentException`. Integrations must never pass parameterized labels: an alphanumeric value such as `Patient 123` passes character validation but is not a stable screen name. A repeated callback for the active screen does not queue another view.
+Queues a `$mobile_screen_view` with `eventProperties.screen_name`. Use a stable developer-chosen destination label of 1–80 characters, starting with an ASCII letter and then containing only ASCII letters, digits, spaces, `_`, or `-`, with no trailing space. Empty names and labels outside those character and length rules are ignored without throwing; a warning is logged under the existing log-level settings. Integrations must never pass parameterized labels: an alphanumeric value such as `Patient 123` passes character validation but is not a stable screen name. A repeated callback for the active screen does not queue another view.
 
 #### `void identify(OursPrivacyUserProperties userProperties)`
 
