@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.1.2
+
+- Ignore invalid screen labels without throwing and log a warning.
+
 ## v3.1.1
 
 - Fix visitor identity handling after reset while preserving queued events' original identities.

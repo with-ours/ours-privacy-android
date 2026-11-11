@@ -274,7 +274,10 @@ public class OursPrivacyAPI {
         if (!requireInitialized("trackScreen") || mPersistence.getOptOut()) return;
         if (name == null || !name.matches("^[A-Za-z][A-Za-z0-9 _-]{0,79}$")
                 || name.endsWith(" ")) {
-            throw new IllegalArgumentException("name must be a stable screen label");
+            OPLog.w(LOGTAG, "trackScreen ignored an invalid screen label. "
+                    + "Use 1-80 ASCII characters starting with a letter, containing only letters, "
+                    + "digits, spaces, underscores, or hyphens, with no trailing whitespace.");
+            return;
         }
         MobileSession.TimePoint point = captureMobileTimePoint();
         dispatchTracking(() -> trackScreenNow(name, point));

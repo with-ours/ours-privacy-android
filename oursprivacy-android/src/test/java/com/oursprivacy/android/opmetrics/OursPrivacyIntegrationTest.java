@@ -1688,6 +1688,7 @@ public class OursPrivacyIntegrationTest {
         op.onForeground();
         op.trackScreen("Schedule");
         clock.advance(2_000);
+        op.trackScreen("Schedule/123");
         op.trackScreen("Schedule");
         clock.advance(3_000);
         op.trackScreen("Visit Details");
@@ -1740,12 +1741,54 @@ public class OursPrivacyIntegrationTest {
     }
 
     @Test
-    public void explicitScreenRejectsEmptyParameterizedAndOverlongLabels() {
-        OursPrivacyAPI op = newApi();
-        op.initialize(TOKEN, null);
-        for (String label : new String[]{null, "", " schedule", "Schedule ", "visit/123",
-                "Visit?patient=42", "A".repeat(81)}) {
-            assertThrows(IllegalArgumentException.class, () -> op.trackScreen(label));
+    public void explicitScreenDropsInvalidLabelsWithPrivateWarnings() throws Exception {
+        int previousLogLevel = OPLog.getLevel();
+        try {
+            OPLog.setLevel(OPLog.WARN);
+            OursPrivacyAPI op = newApi();
+            op.initialize(TOKEN, null);
+            op.trackScreen("Home");
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            int before = queuedCount();
+            ShadowLog.clear();
+            String[] invalid = {null, "", " schedule", "Schedule ", "Schedule\n",
+                    "visit/123", "Visit?patient=42", "Patiént", "123", "A".repeat(81)};
+            for (String label : invalid) {
+                op.trackScreen(label);
+            }
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            assertEquals(before, queuedCount());
+            int warnings = 0;
+            for (ShadowLog.LogItem log : ShadowLog.getLogs()) {
+                if (log.type != android.util.Log.WARN || !log.msg.contains("trackScreen")) continue;
+                warnings++;
+                assertTrue(log.msg.contains("invalid screen label"));
+                assertFalse(log.msg.contains(TOKEN));
+                for (String label : invalid) {
+                    if (label != null && !label.isEmpty()) assertFalse(log.msg.contains(label));
+                }
+            }
+            assertEquals(invalid.length, warnings);
+
+            OPLog.setLevel(OPLog.NONE);
+            ShadowLog.clear();
+            op.trackScreen("Private/999");
+            assertTrue(ShadowLog.getLogs().isEmpty());
+            op.trackScreen("Home");
+            op.trackScreen("A");
+            op.trackScreen("A".repeat(80));
+            op.flush();
+            assertTrue(op.awaitWorkerIdle(IDLE_TIMEOUT_MS));
+            JSONArray data = allCapturedData();
+            assertEquals(3, count(data, "$mobile_screen_view"));
+            assertEquals("Home", nth(data, "$mobile_screen_view", 0)
+                    .getJSONObject("eventProperties").getString("screen_name"));
+            assertEquals("A", nth(data, "$mobile_screen_view", 1)
+                    .getJSONObject("eventProperties").getString("screen_name"));
+            assertEquals("A".repeat(80), nth(data, "$mobile_screen_view", 2)
+                    .getJSONObject("eventProperties").getString("screen_name"));
+        } finally {
+            OPLog.setLevel(previousLogLevel);
         }
     }
 
