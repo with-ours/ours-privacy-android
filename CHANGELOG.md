@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.1.3
+
+- Treat HTTP redirects from the ingest endpoint as retryable instead of as a successful upload, so batches are no longer dropped.
+- Keep uploading to a custom `serverURL` when the default host is blocked on the device's network.
+
 ## v3.1.2
 
 - Ignore invalid screen labels without throwing and log a warning.

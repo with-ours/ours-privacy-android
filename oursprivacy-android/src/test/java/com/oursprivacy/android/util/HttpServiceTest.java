@@ -49,6 +49,38 @@ public class HttpServiceTest {
     }
 
     @Test
+    public void unfollowedRedirectIsNotAnAcknowledgment() throws Exception {
+        // A proxy that upgrades http to https answers with an empty 3xx. HttpURLConnection doesn't
+        // follow a redirect across protocols, so the empty body must not acknowledge the batch.
+        for (String status : new String[]{"301 Moved Permanently", "308 Permanent Redirect"}) {
+            ExecutorService threads = Executors.newSingleThreadExecutor();
+            try (ServerSocket listener = new ServerSocket(0)) {
+                Future<?> server = threads.submit(() -> {
+                    try (Socket socket = listener.accept()) {
+                        BufferedReader input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                        String line;
+                        while ((line = input.readLine()) != null && !line.isEmpty()) {}
+                        socket.getOutputStream().write(("HTTP/1.1 " + status
+                                + "\r\nLocation: https://127.0.0.1:" + listener.getLocalPort() + "/ingest"
+                                + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                                .getBytes(StandardCharsets.UTF_8));
+                        socket.getOutputStream().flush();
+                    } catch (Exception e) { throw new RuntimeException(e); }
+                });
+                try {
+                    byte[] response = new HttpService().performRequest("http://127.0.0.1:"
+                            + listener.getLocalPort() + "/ingest", null, null, "{}", null);
+                    throw new AssertionError("HTTP " + status + " returned "
+                            + (response == null ? "null" : response.length + " bytes") + " as success");
+                } catch (RemoteService.HttpStatusException e) {
+                    assertEquals(Integer.parseInt(status.substring(0, 3)), e.getStatusCode());
+                }
+                server.get(5, TimeUnit.SECONDS);
+            } finally { threads.shutdownNow(); }
+        }
+    }
+
+    @Test
     public void responseHeadersCanArriveAfterOneSecond() throws Exception {
         ExecutorService threads = Executors.newFixedThreadPool(2);
         try (ServerSocket listener = new ServerSocket(0)) {
