@@ -35,7 +35,9 @@ import javax.net.ssl.SSLSocketFactory;
 public final class HttpService implements RemoteService {
 
     private final boolean mShouldGzip;
-    private static boolean sIsOursPrivacyBlocked;
+    // Set on a background thread by checkIsOursPrivacyBlocked(); read by the flush worker.
+    private static volatile boolean sIsOursPrivacyBlocked;
+    private static final String DEFAULT_HOST = hostOf(OURSPRIVACY_API);
 
     private static final int MIN_UNAVAILABLE_HTTP_RESPONSE_CODE = HttpURLConnection.HTTP_INTERNAL_ERROR;
     private static final int MAX_UNAVAILABLE_HTTP_RESPONSE_CODE = 599;
@@ -53,7 +55,7 @@ public final class HttpService implements RemoteService {
         new Thread(new Runnable() {
             public void run() {
                 try {
-                    final InetAddress addr = InetAddress.getByName("cdn.oursprivacy.com");
+                    final InetAddress addr = InetAddress.getByName(DEFAULT_HOST);
                     sIsOursPrivacyBlocked = addr.isLoopbackAddress() || addr.isAnyLocalAddress();
                     if (sIsOursPrivacyBlocked) {
                         OPLog.v(LOGTAG, "AdBlocker is enabled. Won't be able to use OursPrivacy services.");
@@ -67,7 +69,6 @@ public final class HttpService implements RemoteService {
     @SuppressWarnings({"MissingPermission", "deprecation"})
     @Override
     public boolean isOnline(Context context, OfflineMode offlineMode) {
-        if (sIsOursPrivacyBlocked) return false;
         if (isOfflineMode(offlineMode)) return false;
         try {
             final ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -115,6 +116,12 @@ public final class HttpService implements RemoteService {
         OPLog.v(LOGTAG, "Attempting request to " + endpointUrl);
         if (body == null) {
             throw new IOException("HttpService.performRequest called with null body");
+        }
+        // The DNS check only covers the default host. A custom serverURL (a first-party proxy) is how
+        // apps get past a blocked default host, so it is always attempted.
+        if (sIsOursPrivacyBlocked && isDefaultHost(endpointUrl)) {
+            OPLog.v(LOGTAG, "Default ingest host is blocked; keeping events queued.");
+            return null;
         }
 
         byte[] response = null;
@@ -177,9 +184,13 @@ public final class HttpService implements RemoteService {
                 final AtomicReference<Integer> proxyResponseCode = new AtomicReference<>();
                 FutureTask<byte[]> reader = new FutureTask<>(() -> {
                     try {
+                        final int status = responseConnection.getResponseCode();
                         if (interactor != null && isProxyRequest(endpointUrl)) {
-                            proxyResponseCode.set(responseConnection.getResponseCode());
+                            proxyResponseCode.set(status);
                         }
+                        // Only a 2xx acknowledges a batch. An unfollowed redirect (for example http to
+                        // https) has an empty body that would otherwise count as an acknowledgment.
+                        if (status >= 300 && status < 400) throw new HttpStatusException(status);
                         try (InputStream in = responseConnection.getInputStream()) {
                             return slurp(in);
                         }
@@ -244,6 +255,20 @@ public final class HttpService implements RemoteService {
 
     private static void checkNotCancelled(RequestCancellation cancellation) throws IOException {
         if (cancellation.isCancelled()) throw new IOException("Request cancelled");
+    }
+
+    /** True when the endpoint's host is the default ingest host, whatever its scheme, path or query. */
+    private static boolean isDefaultHost(String endpointUrl) {
+        final String host = hostOf(endpointUrl);
+        return host != null && host.equalsIgnoreCase(DEFAULT_HOST);
+    }
+
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static boolean isProxyRequest(String endpointUrl) {
